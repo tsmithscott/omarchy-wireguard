@@ -151,4 +151,30 @@ for (const file of fs.readdirSync(path.join(__dirname, "..")).filter(f => f.ends
   })
 }
 
+// ---- default-route conflicts ----------------------------------------------
+{
+  const mk = (id, active, ...ips) => ({ id, name: id, active, peers: [{ allowedIps: ips }] })
+  const fullV4 = mk("a", true, "0.0.0.0/0")
+  const fullBoth = mk("b", false, "0.0.0.0/0", "::/0")
+  const split = mk("c", true, "10.0.0.0/24")
+  const halves = mk("d", true, "0.0.0.0/1", "128.0.0.0/1")
+  const onlyHalf = mk("e", true, "0.0.0.0/1")
+  const v6 = mk("f", true, "::/0")
+  assert.deepStrictEqual(M.defaultRouteFamilies(fullBoth), ["v4", "v6"])
+  assert.deepStrictEqual(M.defaultRouteFamilies(split), [])
+  assert.deepStrictEqual(M.defaultRouteFamilies(halves), ["v4"])
+  assert.deepStrictEqual(M.defaultRouteFamilies(onlyHalf), [])
+  assert.deepStrictEqual(M.defaultRouteFamilies({ peers: [] }), [])
+  assert.deepStrictEqual(M.defaultRouteFamilies(null), [])
+  const ids = (l) => l.map((t) => t.id).sort()
+  // Full tunnel coming up displaces the active full ones of the same family, not split ones.
+  assert.deepStrictEqual(ids(M.routeConflicts(fullBoth, [fullV4, split, halves, onlyHalf, v6, fullBoth])), ["a", "d", "f"])
+  // Split tunnels never conflict, in either direction.
+  assert.deepStrictEqual(M.routeConflicts(split, [fullV4, halves]), [])
+  // v4-only and v6-only full tunnels coexist.
+  assert.deepStrictEqual(M.routeConflicts(mk("g", false, "::/0"), [fullV4]), [])
+  // Inactive tunnels and the target itself are ignored.
+  assert.deepStrictEqual(M.routeConflicts(fullV4, [Object.assign({}, fullV4), mk("h", false, "0.0.0.0/0")]), [])
+}
+
 console.log("model tests passed")

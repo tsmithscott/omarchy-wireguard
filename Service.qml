@@ -264,6 +264,14 @@ Item {
       up ? "WireGuard connected" : "WireGuard disconnected", String(t.name || "")])
   }
 
+  // Always shown (unlike notifyChanges): a tunnel going down because another
+  // came up should never be silent.
+  function notifyReplaced(t, names) {
+    Quickshell.execDetached(["notify-send", "-a", "WireGuard", "-i", "network-vpn",
+      "WireGuard: switched to " + String(t.name || ""),
+      "Disconnected " + names.join(", ") + ": both route all traffic, so only one can be up."])
+  }
+
   // ---- actions -----------------------------------------------------------
 
   function setPending(t, value) {
@@ -309,6 +317,15 @@ Item {
         var other = activeTunnels[i]
         if (other.id !== t.id && Model.canToggle(other)) down(other)
       }
+    } else {
+      // Two full tunnels would fight over the default route, so the new one
+      // replaces the old. Split tunnels are left alone.
+      var clash = Model.routeConflicts(t, activeTunnels)
+      var replaced = []
+      for (var j = 0; j < clash.length; j++) {
+        if (Model.canToggle(clash[j])) { down(clash[j]); replaced.push(clash[j].name) }
+      }
+      if (replaced.length > 0) notifyReplaced(t, replaced)
     }
     setPending(t, true)
     rememberLast(t)

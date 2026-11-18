@@ -402,6 +402,33 @@ function tunnelHealth(tunnel, nowSec, rxQuietSec) {
   return "ok"
 }
 
+// Which address families a tunnel takes the default route for: "v4" and/or
+// "v6". Counts 0.0.0.0/0 and ::/0, plus the 0.0.0.0/1 + 128.0.0.0/1 (and
+// ::/1 + 8000::/1) split some configs use to outrank the normal default route.
+function defaultRouteFamilies(tunnel) {
+  var all = []
+  var peers = tunnel && tunnel.peers ? tunnel.peers : []
+  for (var i = 0; i < peers.length; i++) all = all.concat(peers[i].allowedIps || [])
+  var nets = all.map(function(a) { return String(a).trim().toLowerCase() })
+  var has = function(n) { return nets.indexOf(n) !== -1 }
+  var fams = []
+  if (has("0.0.0.0/0") || (has("0.0.0.0/1") && has("128.0.0.0/1"))) fams.push("v4")
+  if (has("::/0") || (has("::/1") && has("8000::/1"))) fams.push("v6")
+  return fams
+}
+
+// Active tunnels that would fight `target` for the default route: they claim
+// all traffic for an address family `target` also claims. Split tunnels
+// (specific networks only) never conflict and can run side by side.
+function routeConflicts(target, tunnels) {
+  var mine = defaultRouteFamilies(target)
+  if (mine.length === 0) return []
+  return (tunnels || []).filter(function(t) {
+    if (!t || !t.active || !target || t.id === target.id) return false
+    return defaultRouteFamilies(t).some(function(f) { return mine.indexOf(f) !== -1 })
+  })
+}
+
 // NetworkManager profiles are deleted outright (the profile, not any .conf
 // you imported it from). wg-quick configs live in root-owned /etc/wireguard,
 // so "removing" one only drops it from the widget's list.
@@ -465,6 +492,8 @@ if (typeof module !== "undefined") {
     formatDuration: formatDuration,
     peerHealth: peerHealth,
     tunnelHealth: tunnelHealth,
+    defaultRouteFamilies: defaultRouteFamilies,
+    routeConflicts: routeConflicts,
     removeCommand: removeCommand,
     canRemove: canRemove,
     parseIpInfo: parseIpInfo,

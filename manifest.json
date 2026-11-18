@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "tsmithscott.wireguard",
   "name": "WireGuard",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": "tsmithscott",
   "license": "MIT",
   "description": "WireGuard tunnel status, live speed and traffic stats, peer handshakes, and one-click toggles in the Omarchy bar.",
@@ -78,7 +78,7 @@
         "key": "exclusive",
         "type": "boolean",
         "label": "One tunnel at a time",
-        "description": "Bringing a tunnel up takes the others down.",
+        "description": "Bringing a tunnel up takes all the others down. When off, a full tunnel (0.0.0.0/0 or ::/0) still replaces another full tunnel; split tunnels run side by side.",
         "defaultValue": false
       },
       {

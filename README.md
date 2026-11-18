@@ -20,6 +20,10 @@ Requirements: Omarchy with shell plugin support, NetworkManager (Omarchy's defau
 - **Settings:** a collapsible Settings section at the bottom of the panel covers bar label, default tunnel, automatic public IP, graph, one-tunnel-at-a-time, notifications, peer-stats button, hidden interfaces, and wg-quick configs. Omarchy has no settings screen for plugins, so they live in the panel. They're saved to this widget's entry in `~/.config/omarchy/shell.json`, so `omarchy bar set tsmithscott.wireguard <key> <value>` works too.
 - **Keys:** j/k or arrows move (the panel scrolls to follow), Enter toggles the tunnel or runs the button under the cursor (including opening Settings), Delete removes, Esc closes, `t` master toggle, `c` copy address, `i` import, `p` public IP, `r` refresh.
 
+## Multiple tunnels
+
+Split tunnels (peers that only route specific networks) run side by side. A full tunnel, one that routes all traffic (`0.0.0.0/0` or `::/0`, or the `/1` halves), can't share the default route with another full tunnel. So bringing one up disconnects any other full tunnel for the same address family, and a notification says which one went down. Turn on "One tunnel at a time" in Settings to have every connect disconnect all the others.
+
 ## Tunnel sources
 
 | Kind | Where from | Toggle |

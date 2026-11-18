@@ -83,7 +83,7 @@
   "settings.autoPublicIp.hint": "Asks ipinfo.io when the panel opens and when a tunnel goes up or down. Off: only when you click ↻.",
   "settings.showGraph": "Show throughput graph",
   "settings.exclusive": "One tunnel at a time",
-  "settings.exclusive.hint": "Connecting a tunnel disconnects the others",
+  "settings.exclusive.hint": "Connecting a tunnel disconnects all others. When off, only full tunnels replace each other",
   "settings.notify": "Notify on connect and disconnect",
   "settings.offerPeerStats": "Offer peer stats setup",
   "settings.offerPeerStats.hint": "Show the \"Enable peer stats\" button",
