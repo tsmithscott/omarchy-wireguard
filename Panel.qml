@@ -59,7 +59,9 @@ Panel {
     if (wg.statsState !== "ok" && settings.offerPeerStats !== false) keys.push("stats")
     return keys
   }
-  readonly property int cursorCount: 1 + wg.tunnels.length + actionKeys.length
+  // Cursor order: master switch, tunnels, action buttons, Settings header.
+  readonly property int settingsCursor: 1 + wg.tunnels.length + actionKeys.length
+  readonly property int cursorCount: settingsCursor + 1
 
   function fmtBytes(n) { return Model.formatBytes(n, Commons.I18n.formatNumber) }
   function fmtRate(n) { return Model.formatRate(n, Commons.I18n.formatNumber) }
@@ -98,12 +100,48 @@ Panel {
     cursorIndex = Math.max(0, Math.min(cursorCount - 1, cursorIndex + dy))
     var ti = cursorIndex - 1
     if (ti >= 0 && ti < wg.tunnels.length) selectedId = wg.tunnels[ti].id
+    scrollCursorIntoView()
+  }
+
+  // Opening Settings scrolls them up into view; they sit below the fold.
+  function toggleSettings() {
+    settingsOpen = !settingsOpen
+    if (!settingsOpen) { scrollCursorIntoView(); return }
+    Qt.callLater(function() {
+      var c = panel.loadedContent
+      if (!c || !c.flick || !c.settingsRow) return
+      var top = c.settingsRow.mapToItem(c.flick.contentItem, 0, 0).y - Style.space(6)
+      c.flick.contentY = Math.max(0, Math.min(top, c.flick.contentHeight - c.flick.height))
+    })
+  }
+
+  // The panel caps its height and scrolls, so keep the keyboard cursor on screen.
+  function scrollCursorIntoView() {
+    Qt.callLater(function() {
+      var c = panel.loadedContent
+      var flick = c ? c.flick : null
+      if (!flick) return
+      var item = null
+      var ti = cursorIndex - 1
+      if (cursorIndex === 0) { flick.contentY = 0; return }
+      if (ti < wg.tunnels.length) item = c.tunnelRepeater.itemAt(ti)
+      else if (cursorIndex === settingsCursor) item = c.settingsRow
+      else item = c.actionRepeater.itemAt(ti - wg.tunnels.length)
+      if (!item) return
+      var margin = Style.space(6)
+      var top = item.mapToItem(flick.contentItem, 0, 0).y
+      var bottom = top + item.height
+      var maxY = Math.max(0, flick.contentHeight - flick.height)
+      if (top < flick.contentY + margin) flick.contentY = Math.max(0, top - margin)
+      else if (bottom > flick.contentY + flick.height - margin) flick.contentY = Math.min(maxY, bottom + margin - flick.height)
+    })
   }
 
   function activateCursor() {
     if (cursorIndex === 0) { wg.toggleAll(); return }
     var ti = cursorIndex - 1
     if (ti < wg.tunnels.length) { wg.toggleTunnel(wg.tunnels[ti]); return }
+    if (cursorIndex === settingsCursor) { toggleSettings(); return }
     runAction(actionKeys[ti - wg.tunnels.length])
   }
 
@@ -249,6 +287,10 @@ Panel {
 
     content: PanelKeyCatcher {
       id: keyCatcher
+      readonly property alias flick: panelFlick
+      readonly property alias tunnelRepeater: tunnelRepeater
+      readonly property alias actionRepeater: actionRepeater
+      readonly property alias settingsRow: settingsRow
       implicitHeight: column.implicitHeight
       anchors.fill: parent
       blocked: root.confirmOpen
@@ -451,11 +493,13 @@ Panel {
               DetailValue {
                 Layout.columnSpan: 3
                 text: {
+                  if (root.selected && root.selected.active && !(root.selected.rx > 0)) return strings.t("stat.never")
                   var q = wg.rxQuietFor(root.selected)
                   if (q < 0) return "--"
                   return q < 2 ? strings.t("stat.justNow") : strings.t("peer.agoShort").arg(Model.formatDuration(q))
                 }
-                color: wg.health === "degraded" ? root.urgent : root.foreground
+                // This tunnel's health, not the bar's worst-of-all.
+                color: Model.tunnelHealth(root.selected, wg.nowSec, wg.rxQuietFor(root.selected)) === "degraded" ? root.urgent : root.foreground
               }
             }
 
@@ -544,6 +588,7 @@ Panel {
             }
 
             Repeater {
+              id: tunnelRepeater
               model: wg.tunnels
               TunnelRow {
                 required property var modelData
@@ -590,6 +635,7 @@ Panel {
             spacing: Style.space(8)
 
             Repeater {
+              id: actionRepeater
               model: root.actionKeys
               Button {
                 required property string modelData
@@ -623,14 +669,18 @@ Panel {
           PanelSeparator { foreground: root.foreground }
 
           CursorSurface {
+            id: settingsRow
             width: parent.width
             foreground: root.foreground
+            hasCursor: root.cursorActive && root.cursorIndex === root.settingsCursor
             implicitHeight: settingsHeader.implicitHeight + Style.spacing.rowPaddingX
 
             MouseArea {
               anchors.fill: parent
+              hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.settingsOpen = !root.settingsOpen
+              onEntered: { root.cursorActive = true; root.cursorIndex = root.settingsCursor }
+              onClicked: root.toggleSettings()
             }
 
             RowLayout {

@@ -56,6 +56,7 @@
   "stat.recheck": "Check again",
   "stat.lastRx": "Last received",
   "stat.justNow": "just now",
+  "stat.never": "never",
   "peer.agoShort": "%1 ago",
   "tunnel.remove": "Remove",
   "tunnel.hide": "Hide",
