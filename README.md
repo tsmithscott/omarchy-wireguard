@@ -4,6 +4,10 @@ A bar widget for [Omarchy](https://omarchy.org/) that shows your WireGuard tunne
 
 > Community project. Not affiliated with or endorsed by WireGuard or Jason A. Donenfeld.
 
+![The WireGuard panel open from the Omarchy bar, showing two connected tunnels, live throughput and peer details](preview.png)
+
+<sub>Screenshot uses example data (documentation IP ranges).</sub>
+
 ## Install
 
 ```bash
@@ -67,12 +71,23 @@ Connection health still works without the root helper. If a tunnel with keepaliv
 `omarchy dns` (Cloudflare/Google/Custom) writes a NetworkManager `[global-dns]` block, and while that block exists NetworkManager ignores every connection's own DNS. A tunnel's `DNS =` line is silently dropped. The panel's DNS row shows whether the tunnel's servers are actually in use, and **Fix tunnel DNS** (one password prompt) installs `bin/tunnel-dns-dispatcher` as `/etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns`. When a WireGuard profile comes up, the hook sets that link's DNS in systemd-resolved, the way wg-quick does:
 
 - **Which lookups use the tunnel:** if the profile's search domains include `~domain` entries, only lookups for those domains go through the tunnel (split DNS). Otherwise `~.` sends every lookup through the tunnel while it's up, so nothing leaks to the system DNS.
+- **Several tunnels at once:** see below.
 - **DNS-over-TLS** is turned off for the tunnel link, because tunnel resolvers rarely support it.
-- **Re-applied automatically** on NetworkManager's `dns-change` event, in case NetworkManager rewrites the link.
+- **Re-applied automatically** whenever a WireGuard tunnel goes up, goes down or is reapplied, and on NetworkManager's `dns-change` event, in case NetworkManager rewrites the link.
 
 Your system DNS choice is untouched and still applies whenever no tunnel is up. The hook works for `nmcli connection up` too, not only the plugin.
 
 Undo: `pkexec ~/.config/omarchy/plugins/tsmithscott.wireguard/bin/setup-tunnel-dns --remove`
+
+If you installed the hook from an older version of the plugin, the panel offers **Update DNS hook** (one password prompt) so it follows the Tunnel DNS setting.
+
+### Several tunnels with DNS
+
+When two connected tunnels both take every lookup (both have `~.`), systemd-resolved doesn't pick one. It sends each lookup to both and uses whichever answers first, so a name that only one tunnel's resolver knows can still come back "not found" from the other. The panel says when this is happening.
+
+**Settings → Tunnel DNS** picks one tunnel to answer every lookup while it's connected. The others then answer only their own `~domain` routing and search domains. **Automatic** goes back to asking them all. A split-DNS tunnel (one with its own `~domain` entries) isn't on the list, because it never takes every lookup.
+
+The choice is stored in the NetworkManager profile as `ipv4.dns-priority` and `ipv6.dns-priority` = `-50`, NetworkManager's own "use only this connection's DNS" setting. So it holds whether or not `omarchy dns` is set, and from `nmcli connection up` too. wg-quick tunnels set their own DNS through resolvconf and aren't affected.
 
 ## Uninstalling
 

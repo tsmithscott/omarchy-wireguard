@@ -29,7 +29,7 @@ Item {
   readonly property string lastTunnel: String(setting("lastTunnel", "") || "")
   readonly property bool exclusive: setting("exclusive", false) === true
   readonly property bool notifyChanges: setting("notifyChanges", false) === true
-  readonly property int historyLength: 60
+  readonly property int historyWindowMs: 60000
   readonly property bool autoPublicIp: setting("autoPublicIp", true) !== false
 
   property bool nmAvailable: true
@@ -66,6 +66,14 @@ Item {
   readonly property bool dnsFixInstalled: snapshot.dnsFix === true
   readonly property bool dnsFixNeeded: snapshot.globalDns === true && !dnsFixInstalled
     && tunnels.some(function(t) { return t.kind === "nm" && t.dns.length > 0 })
+  // An older hook gives every tunnel "~." and ignores the DNS choice below.
+  readonly property bool dnsFixOutdated: dnsFixInstalled && (snapshot.hookVersion || 0) < Model.DNS_HOOK_VERSION
+    && dnsChoices.length > 0
+  // Which tunnel answers lookups when several are up: a NetworkManager
+  // profile with a negative dns-priority, or null for automatic.
+  readonly property var dnsChoices: Model.dnsChoices(tunnels)
+  readonly property var preferredDns: Model.preferredDnsTunnel(tunnels)
+  readonly property var dnsCatchAll: Model.dnsCatchAll(activeTunnels)
 
   readonly property var activeTunnels: tunnels.filter(function(t) { return isActive(t) })
   readonly property bool anyActive: activeTunnels.length > 0
@@ -240,7 +248,7 @@ Item {
     }
     rxRate = rx
     txRate = tx
-    history = Model.pushHistory(history, { rx: rx, tx: tx }, historyLength)
+    history = Model.trimHistory(Model.pushHistory(history, { rx: rx, tx: tx, at: now }, 120), now, historyWindowMs + 2000)
     nowSec = now / 1000
 
     // Drop optimistic overrides once reality matches (or the tunnel vanished).
@@ -400,6 +408,14 @@ Item {
     setupProcess.command = ["pkexec", "bash", dnsSetupScript, dnsDispatcher]
     actionStatus = "Waiting for authorization…"  // i18n: ignore
     setupProcess.running = true
+  }
+
+  // Make `t` the tunnel whose DNS answers every lookup while it is up, or pass
+  // null to go back to automatic (every full-DNS tunnel is asked, first
+  // answer wins). Stored as NetworkManager's own ipv4/ipv6.dns-priority.
+  function setPreferredDns(t) {
+    var cmds = Model.preferDnsCommands(tunnels, t)
+    for (var i = 0; i < cmds.length; i++) enqueue(cmds[i], "")
   }
 
   function checkPublicIp() {

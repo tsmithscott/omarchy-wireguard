@@ -8,7 +8,8 @@
 #   D  <wg show all dump line, keys redacted>                  full, if enabled
 #   S  ok|fail|absent                                          full (peer stats)
 #   R  <ifname> <dns servers in use, space-separated>          full
-#   G  <global-dns: yes|no> <tunnel-dns dispatcher: yes|no>    full
+#   Q  <ifname> <dns domains in use, space-separated>          full
+#   G  <global-dns: yes|no> <tunnel-dns dispatcher: yes|no> <hook version>  full
 #
 # Usage: wg-status [fast|full] [stats]
 
@@ -36,15 +37,22 @@ for dir in /sys/class/net/*; do
   ifname=${dir##*/}
   in_use=$(resolvectl dns "$ifname" 2>/dev/null | sed -n 's/^Link [0-9]* ([^)]*):[[:space:]]*//p' | head -1)
   printf 'R\t%s\t%s\n' "$ifname" "$in_use"
+  domains=$(resolvectl domain "$ifname" 2>/dev/null | sed -n 's/^Link [0-9]* ([^)]*):[[:space:]]*//p' | head -1)
+  printf 'Q\t%s\t%s\n' "$ifname" "$domains"
 done
 
 # A NetworkManager [global-dns] block (omarchy dns writes one) makes NM ignore
 # per-connection DNS; the dispatcher script puts tunnel DNS back.
 global=no
 grep -qs '^[[:space:]]*\[global-dns' /etc/NetworkManager/NetworkManager.conf /etc/NetworkManager/conf.d/*.conf && global=yes
-dispatcher=no
-[[ -x /etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns ]] && dispatcher=yes
-printf 'G\t%s\t%s\n' "$global" "$dispatcher"
+dispatcher=no hook_version=0
+hook=/etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns
+if [[ -x $hook ]]; then
+  dispatcher=yes hook_version=1
+  v=$(sed -n 's/^# hook-version: \([0-9]\{1,4\}\)$/\1/p' "$hook" 2>/dev/null | head -1)
+  [[ -n $v ]] && hook_version=$v
+fi
+printf 'G\t%s\t%s\t%s\n' "$global" "$dispatcher" "$hook_version"
 
 if command -v nmcli >/dev/null 2>&1; then
   while IFS= read -r line; do
@@ -56,7 +64,7 @@ if command -v nmcli >/dev/null 2>&1; then
     # Volatile (/run) profiles belong to whatever created the interface
     # (wg-quick, NetBird, ...); their config is not ours to read.
     [[ $line == *:/run/* ]] && continue
-    for field in wireguard.peers ipv4.addresses ipv6.addresses wireguard.listen-port ipv4.dns ipv6.dns; do
+    for field in wireguard.peers ipv4.addresses ipv6.addresses wireguard.listen-port ipv4.dns ipv6.dns ipv4.dns-priority ipv6.dns-priority ipv4.dns-search ipv6.dns-search; do
       value=$(nmcli -g "$field" connection show uuid "$uuid" 2>/dev/null | tr '\n' ' ')
       printf 'N\t%s\t%s\t%s\n' "$uuid" "$field" "${value% }"
     done

@@ -177,4 +177,68 @@ for (const file of fs.readdirSync(path.join(__dirname, "..")).filter(f => f.ends
   assert.deepStrictEqual(M.routeConflicts(fullV4, [Object.assign({}, fullV4), mk("h", false, "0.0.0.0/0")]), [])
 }
 
+{
+  const h = [{ at: 1000 }, { at: 30000 }, { at: 61000 }, { at: 90000 }]
+  assert.deepStrictEqual(M.trimHistory(h, 90000, 60000).map((s) => s.at), [30000, 61000, 90000])
+  assert.deepStrictEqual(M.trimHistory(null, 1, 1), [])
+}
+
+{
+  assert.strictEqual(M.dnsPriority("0", "0"), 50)
+  assert.strictEqual(M.dnsPriority("-50", "0"), -50)
+  assert.strictEqual(M.dnsPriority("100", "-5"), -5)
+  assert.strictEqual(M.dnsPriority(undefined, ""), 50)
+
+  const snap = M.parseSnapshot([
+    "R\twg0\t10.0.0.53",
+    "Q\twg0\t~.",
+    "R\twg1\t10.9.0.53",
+    "Q\twg1\tcorp.example ~corp.example",
+    "G\tyes\tyes\t2"
+  ].join("\n"))
+  assert.deepStrictEqual(snap.domains.wg1, ["corp.example", "~corp.example"])
+  assert.strictEqual(snap.hookVersion, 2)
+  assert.strictEqual(M.parseSnapshot("G\tyes\tyes").hookVersion, 1)
+  assert.strictEqual(M.parseSnapshot("G\tyes\tno\t0").hookVersion, 0)
+  assert.strictEqual(M.mergeSnapshot(snap, M.parseSnapshot("I\twg0\t1\t2\t1420\t")).hookVersion, 2)
+
+  const mk = (id, extra) => Object.assign({ id: "nm:" + id, kind: "nm", uuid: id, device: id, active: true,
+    dns: ["10.0.0.53"], dnsInUse: ["10.0.0.53"], dnsDomainsInUse: ["~."], dnsPriority: 50, dnsSearch: [] }, extra)
+  const a = mk("a"), b = mk("b"), c = mk("c", { dnsDomainsInUse: ["~corp.example"], dnsSearch: ["~corp.example"] })
+  assert.strictEqual(M.dnsRole(a), "all")
+  assert.strictEqual(M.dnsRole(c), "domains")
+  assert.strictEqual(M.dnsRole(mk("d", { active: false })), "none")
+  assert.ok(M.hasRoutingDomains(c) && !M.hasRoutingDomains(mk("e", { dnsSearch: ["~"] })))
+  assert.deepStrictEqual(M.dnsCatchAll([a, b, c]).map((t) => t.id), ["nm:a", "nm:b"])
+  assert.strictEqual(M.preferredDnsTunnel([a, b]), null)
+
+  // Choosing b: b goes negative, then connected ones are reapplied.
+  assert.deepStrictEqual(M.preferDnsCommands([a, b, c], b), [
+    ["nmcli", "connection", "modify", "uuid", "b", "ipv4.dns-priority", "-50", "ipv6.dns-priority", "-50"],
+    ["nmcli", "device", "reapply", "b"]
+  ])
+  // Switching from b to a resets b; back to automatic resets everyone negative.
+  const bPref = mk("b", { dnsPriority: -50 })
+  assert.strictEqual(M.preferredDnsTunnel([a, bPref]).id, "nm:b")
+  assert.deepStrictEqual(M.preferDnsCommands([a, bPref], a).map((cmd) => cmd.slice(0, 7).join(" ")), [
+    "nmcli connection modify uuid a ipv4.dns-priority -50",
+    "nmcli connection modify uuid b ipv4.dns-priority 0",
+    "nmcli device reapply a",
+    "nmcli device reapply b"
+  ])
+  assert.deepStrictEqual(M.preferDnsCommands([a, bPref], null).length, 2)
+  assert.deepStrictEqual(M.preferDnsCommands([a, b], null), [])
+  assert.deepStrictEqual(M.dnsChoices([a, b, c]).map((t) => t.id), ["nm:a", "nm:b"])
+  // nmcli -g escapes colons in IPv6 values.
+  const t6 = M.buildTunnels(M.parseSnapshot([
+    "C\tv6:" + UUID + ":wireguard:::/etc/NetworkManager/system-connections/v6.nmconnection:no",
+    "N\t" + UUID + "\tipv6.dns\tfd00\\:\\:53,fd00\\:\\:54",
+    "N\t" + UUID + "\tipv6.addresses\tfd00\\:\\:2/64"
+  ].join("\n")), {})[0]
+  assert.deepStrictEqual(t6.dns, ["fd00::53", "fd00::54"])
+  assert.deepStrictEqual(t6.addresses, ["fd00::2/64"])
+  // wg-quick and DNS-less tunnels are never touched.
+  assert.deepStrictEqual(M.preferDnsCommands([mk("w", { kind: "wgquick" }), mk("x", { dns: [] })], null), [])
+}
+
 console.log("model tests passed")

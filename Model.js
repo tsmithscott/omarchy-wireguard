@@ -62,6 +62,11 @@ function isKey(value) {
 }
 
 // `nmcli -g wireguard.peers`: "<key> allowed-ips=a;b endpoint=h\:p persistent-keepalive=25, <key> ..."
+// `nmcli -g` escapes colons, so IPv6 addresses arrive as "fd00\\:\\:53".
+function nmList(value) {
+  return splitList(String(value || "").replace(/\\:/g, ":"), ",")
+}
+
 function parseNmPeers(value) {
   var text = String(value || "").trim()
   if (text === "") return []
@@ -86,7 +91,7 @@ function parseNmPeers(value) {
 }
 
 function emptySnapshot() {
-  return { ifaces: {}, conns: [], nm: {}, dump: {}, stats: "", resolved: {}, globalDns: false, dnsFix: false, full: false }
+  return { ifaces: {}, conns: [], nm: {}, dump: {}, stats: "", resolved: {}, domains: {}, globalDns: false, dnsFix: false, hookVersion: 0, full: false }
 }
 
 function parseSnapshot(raw) {
@@ -122,9 +127,12 @@ function parseSnapshot(raw) {
       parseDumpLine(snap.dump, f.slice(1))
     } else if (tag === "R" && f.length >= 2) {
       snap.resolved[clip(f[1])] = splitList(f.length > 2 ? f[2] : "", /\s+/)
+    } else if (tag === "Q" && f.length >= 2) {
+      snap.domains[clip(f[1])] = splitList(f.length > 2 ? f[2] : "", /\s+/)
     } else if (tag === "G" && f.length >= 3) {
       snap.globalDns = f[1] === "yes"
       snap.dnsFix = f[2] === "yes"
+      snap.hookVersion = snap.dnsFix ? Math.max(1, toNumber(f[3])) : 0
     } else if (tag === "S") {
       snap.full = true
       snap.stats = f[1] === "ok" || f[1] === "fail" || f[1] === "absent" ? f[1] : ""
@@ -163,7 +171,8 @@ function mergeSnapshot(previous, next) {
   var prev = previous || emptySnapshot()
   return {
     ifaces: next.ifaces, conns: prev.conns, nm: prev.nm, dump: prev.dump, stats: prev.stats,
-    resolved: prev.resolved, globalDns: prev.globalDns, dnsFix: prev.dnsFix, full: false
+    resolved: prev.resolved, domains: prev.domains || {}, globalDns: prev.globalDns, dnsFix: prev.dnsFix,
+    hookVersion: prev.hookVersion || 0, full: false
   }
 }
 
@@ -222,9 +231,12 @@ function buildTunnels(snap, options) {
       active: activated,
       busy: c.state === "activating" || c.state === "deactivating",
       autoconnect: c.autoconnect,
-      addresses: iface && iface.addresses.length > 0 ? iface.addresses : splitList(nm["ipv4.addresses"], ",").concat(splitList(nm["ipv6.addresses"], ",")),
-      dns: splitList(nm["ipv4.dns"], ",").concat(splitList(nm["ipv6.dns"], ",")),
+      addresses: iface && iface.addresses.length > 0 ? iface.addresses : nmList(nm["ipv4.addresses"]).concat(nmList(nm["ipv6.addresses"])),
+      dns: nmList(nm["ipv4.dns"]).concat(nmList(nm["ipv6.dns"])),
       dnsInUse: activated && c.device && snap.resolved[c.device] ? snap.resolved[c.device] : [],
+      dnsDomainsInUse: activated && c.device && snap.domains[c.device] ? snap.domains[c.device] : [],
+      dnsPriority: dnsPriority(nm["ipv4.dns-priority"], nm["ipv6.dns-priority"]),
+      dnsSearch: nmList(nm["ipv4.dns-search"]).concat(nmList(nm["ipv6.dns-search"])),
       listenPort: live && live.listenPort ? live.listenPort : toNumber(nm["wireguard.listen-port"]),
       publicKey: live ? live.publicKey || "" : "",
       mtu: iface ? iface.mtu : 0,
@@ -253,6 +265,9 @@ function buildTunnels(snap, options) {
       addresses: ifc.addresses,
       dns: [],
       dnsInUse: snap.resolved[name] || [],
+      dnsDomainsInUse: snap.domains[name] || [],
+      dnsPriority: 0,
+      dnsSearch: [],
       listenPort: dumped ? dumped.listenPort || 0 : 0,
       publicKey: dumped ? dumped.publicKey || "" : "",
       mtu: ifc.mtu,
@@ -268,7 +283,7 @@ function buildTunnels(snap, options) {
     if (!isInterfaceName(cfg) || claimed[cfg] || contains(exclude, cfg)) continue
     tunnels.push({
       id: "if:" + cfg, kind: "wgquick", name: cfg, uuid: "", device: "", state: "", active: false, busy: false,
-      autoconnect: false, addresses: [], dns: [], dnsInUse: [], listenPort: 0, publicKey: "", mtu: 0, rx: 0, tx: 0, peers: []
+      autoconnect: false, addresses: [], dns: [], dnsInUse: [], dnsDomainsInUse: [], dnsPriority: 0, dnsSearch: [], listenPort: 0, publicKey: "", mtu: 0, rx: 0, tx: 0, peers: []
     })
   }
 
@@ -283,6 +298,90 @@ function dnsState(tunnel) {
   var inUse = tunnel.dnsInUse || []
   for (var i = 0; i < tunnel.dns.length; i++) if (inUse.indexOf(tunnel.dns[i]) !== -1) return "ok"
   return "missing"
+}
+
+// The DNS hook (bin/tunnel-dns-dispatcher) version this plugin ships.
+var DNS_HOOK_VERSION = 2
+// What "Use for all lookups" sets ipv4/ipv6.dns-priority to. Negative is
+// NetworkManager's "only this connection's DNS" (see nm-settings dns-priority).
+var PREFERRED_DNS_PRIORITY = -50
+
+// Effective priority, NetworkManager style: 0 is "default" (50 for VPNs); the
+// better of v4 and v6 counts.
+function dnsPriority(v4, v6) {
+  var best = null
+  var values = [v4, v6]
+  for (var i = 0; i < values.length; i++) {
+    var n = parseInt(String(values[i] === undefined ? "" : values[i]).trim(), 10)
+    if (!isFinite(n) || n === 0) continue
+    if (best === null || n < best) best = n
+  }
+  return best === null ? 50 : best
+}
+
+// Has the profile its own "~corp.example" routing domains (split DNS)?
+function hasRoutingDomains(tunnel) {
+  var list = (tunnel && tunnel.dnsSearch) || []
+  for (var i = 0; i < list.length; i++) {
+    var d = String(list[i] || "")
+    if (d.charAt(0) === "~" && d !== "~" && d !== "~.") return true
+  }
+  return false
+}
+
+// How systemd-resolved is using a connected tunnel's DNS right now:
+//   "all"      every lookup without a more specific match (it has "~.")
+//   "domains"  only its own routing/search domains
+//   "none"     not connected, or no DNS of its own
+function dnsRole(tunnel) {
+  if (!tunnel || !tunnel.active || !tunnel.dnsInUse || tunnel.dnsInUse.length === 0) return "none"
+  return (tunnel.dnsDomainsInUse || []).indexOf("~.") !== -1 ? "all" : "domains"
+}
+
+// Connected tunnels that all take every lookup: systemd-resolved asks each
+// of them in parallel and goes with whichever answers first.
+function dnsCatchAll(tunnels) {
+  return (tunnels || []).filter(function(t) { return dnsRole(t) === "all" })
+}
+
+// The NetworkManager tunnel marked "use for all lookups" (lowest negative
+// priority), or null for automatic.
+function preferredDnsTunnel(tunnels) {
+  var best = null
+  for (var i = 0; i < (tunnels || []).length; i++) {
+    var t = tunnels[i]
+    if (t.kind !== "nm" || !(t.dnsPriority < 0)) continue
+    if (!best || t.dnsPriority < best.dnsPriority) best = t
+  }
+  return best
+}
+
+// Tunnels the DNS choice can point at: NetworkManager profiles with DNS that
+// aren't split DNS (a "~corp.example" profile only ever answers its domains).
+function dnsChoices(tunnels) {
+  return (tunnels || []).filter(function(t) {
+    return t.kind === "nm" && t.dns && t.dns.length > 0 && !hasRoutingDomains(t)
+  })
+}
+
+// nmcli commands that make `chosen` (or nobody, for automatic) the preferred
+// DNS tunnel, then reapply connected ones so the change takes effect now.
+function preferDnsCommands(tunnels, chosen) {
+  var cmds = []
+  var reapply = []
+  var list = dnsChoices(tunnels)
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i]
+    var want = chosen && t.id === chosen.id
+    var value
+    if (want && t.dnsPriority !== PREFERRED_DNS_PRIORITY) value = String(PREFERRED_DNS_PRIORITY)
+    else if (!want && t.dnsPriority < 0) value = "0"
+    else continue
+    cmds.push(["nmcli", "connection", "modify", "uuid", t.uuid, "ipv4.dns-priority", value, "ipv6.dns-priority", value])
+    if (t.active && isInterfaceName(t.device)) reapply.push(t.device)
+  }
+  for (var r = 0; r < reapply.length; r++) cmds.push(["nmcli", "device", "reapply", reapply[r]])
+  return cmds
 }
 
 function isInterfaceName(name) {
@@ -324,6 +423,13 @@ function throughput(previous, ifaces, now) {
     else rates[name] = { rx: 0, tx: 0 }
   }
   return { time: now, counters: counters, rates: rates }
+}
+
+// Keeps samples (each with an `at` timestamp in ms) from the last windowMs.
+// Sampling is every second with the panel open and every few seconds when it
+// is closed, so the graph is plotted by time, not by sample count.
+function trimHistory(history, nowMs, windowMs) {
+  return (history || []).filter(function(s) { return s && s.at >= nowMs - windowMs })
 }
 
 function pushHistory(history, sample, limit) {
@@ -486,6 +592,16 @@ if (typeof module !== "undefined") {
     downCommand: downCommand,
     throughput: throughput,
     pushHistory: pushHistory,
+    trimHistory: trimHistory,
+    DNS_HOOK_VERSION: DNS_HOOK_VERSION,
+    PREFERRED_DNS_PRIORITY: PREFERRED_DNS_PRIORITY,
+    dnsPriority: dnsPriority,
+    hasRoutingDomains: hasRoutingDomains,
+    dnsRole: dnsRole,
+    dnsCatchAll: dnsCatchAll,
+    preferredDnsTunnel: preferredDnsTunnel,
+    dnsChoices: dnsChoices,
+    preferDnsCommands: preferDnsCommands,
     formatBytes: formatBytes,
     formatRate: formatRate,
     formatRateShort: formatRateShort,

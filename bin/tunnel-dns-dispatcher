@@ -2,60 +2,125 @@
 # NetworkManager dispatcher script, installed by the Omarchy WireGuard bar
 # plugin (tsmithscott.wireguard) as
 #   /etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns
+# hook-version: 2
 #
 # NetworkManager ignores every connection's own DNS while a [global-dns] block
 # exists, and `omarchy dns` writes one. So a WireGuard profile's DNS= never
-# reaches systemd-resolved. This puts it there for the tunnel's interface, the
-# way wg-quick does:
+# reaches systemd-resolved. This puts it there for each tunnel's interface,
+# following NetworkManager's own rules for which connection answers what:
 #   - the profile's ipv4.dns / ipv6.dns servers
 #   - its routing domains: if it lists any "~corp.example" style domains, only
 #     those go through the tunnel (split DNS); otherwise "~." sends every
 #     lookup through it while it is up, so nothing leaks to the system DNS
+#   - ipv4.dns-priority / ipv6.dns-priority: if any active tunnel's is
+#     negative, only the tunnel(s) with the lowest value get "~."; the others
+#     keep just their own routing and search domains. Without a negative
+#     priority every tunnel that takes all lookups gets "~.", and
+#     systemd-resolved asks all of them at once and uses the first answer.
 #   - its plain search domains, DNS-over-TLS off for that link (tunnel
 #     resolvers rarely speak it), and the cache flushed
-# It runs on "up" for WireGuard connections and re-applies on "dns-change",
-# because NetworkManager may push its own (empty) link DNS again later.
+# It re-applies every active WireGuard tunnel on up, down, reapply and
+# dns-change, because one tunnel coming or going changes who gets "~.", and
+# NetworkManager may push its own (empty) link DNS again later.
+#
+# OMARCHY_WG_DNS_DRY_RUN=1 prints the resolvectl calls instead of running
+# them (for testing without root).
 
 set -u
 export PATH=/usr/bin:/usr/sbin
 
-apply() {
-  local uuid=$1 iface=$2
-  [[ $uuid =~ ^[0-9a-fA-F-]{36}$ && $iface =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]] || return 0
+run() {
+  if [[ ${OMARCHY_WG_DNS_DRY_RUN:-} == 1 ]]; then
+    echo "$*"
+  else
+    "$@"
+  fi
+}
 
-  local raw servers=() domains=() routing=0 token
-  raw=$(nmcli -g ipv4.dns,ipv6.dns connection show uuid "$uuid" 2>/dev/null | tr ',\n' '  ')
+# Effective DNS priority of a profile. 0 means NetworkManager's default, which
+# is 50 for VPNs (WireGuard included); the better of v4 and v6 counts.
+priority() {
+  local p best=50 set=0
+  for p in $(nmcli -g ipv4.dns-priority,ipv6.dns-priority connection show uuid "$1" 2>/dev/null); do
+    [[ $p =~ ^-?[0-9]+$ ]] || continue
+    ((p == 0)) && continue
+    if ((!set || p < best)); then best=$p; set=1; fi
+  done
+  echo "$best"
+}
+
+# Reads a profile's DNS into the globals servers/domains/routing. nmcli -g
+# escapes colons ("fd00\\:\\:53"), so they are unescaped first.
+read_profile() {
+  local uuid=$1 raw token
+  servers=() domains=() routing=0
+  raw=$(nmcli -g ipv4.dns,ipv6.dns connection show uuid "$uuid" 2>/dev/null | sed 's/\\:/:/g' | tr ',\n' '  ')
   for token in $raw; do
     [[ $token =~ ^[0-9a-fA-F:.]{2,45}$ ]] && servers+=("$token")
   done
-  ((${#servers[@]})) || return 0
-
-  raw=$(nmcli -g ipv4.dns-search,ipv6.dns-search connection show uuid "$uuid" 2>/dev/null | tr ',\n' '  ')
+  raw=$(nmcli -g ipv4.dns-search,ipv6.dns-search connection show uuid "$uuid" 2>/dev/null | sed 's/\\:/:/g' | tr ',\n' '  ')
   for token in $raw; do
     [[ $token == "~" || $token == "~." ]] && continue
     [[ $token =~ ^~?[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$ ]] || continue
     [[ $token == "~"* ]] && routing=1
     domains+=("$token")
   done
-  ((routing)) || domains+=("~.")
+}
 
-  resolvectl dns "$iface" "${servers[@]}"
-  resolvectl domain "$iface" "${domains[@]}"
-  resolvectl default-route "$iface" yes
-  resolvectl dnsovertls "$iface" no
-  resolvectl flush-caches
+apply() {
+  local uuid=$1 iface=$2 catch_all=$3
+  local servers domains routing
+  read_profile "$uuid"
+  ((${#servers[@]})) || return 0
+
+  local default_route=no
+  if [[ $catch_all == yes ]]; then
+    domains+=("~.")
+    default_route=yes
+  fi
+
+  run resolvectl dns "$iface" "${servers[@]}"
+  run resolvectl domain "$iface" "${domains[@]}"
+  run resolvectl default-route "$iface" "$default_route"
+  run resolvectl dnsovertls "$iface" no
+}
+
+apply_all() {
+  local uuid type device state p lowest=0
+  local uuids=() devices=() prios=() wants=()
+  local servers domains routing
+  while IFS=: read -r uuid type device state; do
+    [[ $type == wireguard && -n $device && $state == activated ]] || continue
+    [[ $uuid =~ ^[0-9a-fA-F-]{36}$ && $device =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]] || continue
+    read_profile "$uuid"
+    ((${#servers[@]})) || continue
+    # A tunnel with its own routing domains is split DNS: it never takes
+    # every lookup, so it doesn't compete for "~." either.
+    p=$(priority "$uuid")
+    uuids+=("$uuid") devices+=("$device") prios+=("$p") wants+=($((!routing)))
+    ((!routing && p < lowest)) && lowest=$p
+  done < <(nmcli -t -f UUID,TYPE,DEVICE,STATE connection show --active 2>/dev/null)
+
+  local i catch_all
+  for i in "${!uuids[@]}"; do
+    catch_all=no
+    if ((wants[i])) && ((lowest >= 0 || prios[i] == lowest)); then catch_all=yes; fi
+    apply "${uuids[i]}" "${devices[i]}" "$catch_all"
+  done
+  run resolvectl flush-caches
+}
+
+is_wireguard() {
+  [[ -n ${CONNECTION_UUID:-} ]] || return 1
+  [[ $(nmcli -g connection.type connection show uuid "$CONNECTION_UUID" 2>/dev/null) == wireguard ]]
 }
 
 case "${2:-}" in
-up)
-  [[ -n ${CONNECTION_UUID:-} ]] || exit 0
-  [[ $(nmcli -g connection.type connection show uuid "$CONNECTION_UUID" 2>/dev/null) == wireguard ]] || exit 0
-  apply "$CONNECTION_UUID" "$1"
+up | down | reapply)
+  is_wireguard && apply_all
   ;;
 dns-change)
-  while IFS=: read -r uuid type device; do
-    [[ $type == wireguard && -n $device ]] && apply "$uuid" "$device"
-  done < <(nmcli -t -f UUID,TYPE,DEVICE connection show --active 2>/dev/null)
+  apply_all
   ;;
 esac
 exit 0

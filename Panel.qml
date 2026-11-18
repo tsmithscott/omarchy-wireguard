@@ -55,6 +55,7 @@ Panel {
   readonly property var actionKeys: {
     var keys = ["import"]
     if (wg.dnsFixNeeded) keys.push("dnsFix")
+    if (wg.dnsFixOutdated) keys.push("dnsUpdate")
     if (!wg.autoPublicIp) keys.push("publicIp")
     if (wg.statsState !== "ok" && settings.offerPeerStats !== false) keys.push("stats")
     return keys
@@ -66,9 +67,9 @@ Panel {
   function fmtBytes(n) { return Model.formatBytes(n, Commons.I18n.formatNumber) }
   function fmtRate(n) { return Model.formatRate(n, Commons.I18n.formatNumber) }
 
+  // NetworkManager is the normal case, so only the others get a label.
   function kindLabel(t) {
-    if (!t) return ""
-    if (t.kind === "nm") return strings.t("kind.nm")
+    if (!t || t.kind === "nm") return ""
     if (t.kind === "wgquick") return strings.t("kind.wgquick")
     return strings.t("kind.external")
   }
@@ -193,6 +194,15 @@ Panel {
     return options[(i + 1) % options.length]
   }
 
+  // "" is automatic; otherwise a tunnel id.
+  readonly property var dnsTunnelOptions: [""].concat(wg.dnsChoices.map(function(t) { return t.id }))
+
+  function chooseDnsTunnel() {
+    var current = wg.preferredDns ? wg.preferredDns.id : ""
+    var next = cycle(dnsTunnelOptions, current)
+    wg.setPreferredDns(next === "" ? null : wg.tunnelById(next))
+  }
+
   readonly property var defaultTunnelOptions: {
     var names = [""]
     for (var i = 0; i < wg.tunnels.length; i++) if (Model.canToggle(wg.tunnels[i])) names.push(wg.tunnels[i].name)
@@ -203,7 +213,7 @@ Panel {
     if (key === "import") wg.importConfig()
     else if (key === "publicIp") wg.checkPublicIp()
     else if (key === "stats") wg.enablePeerStats()
-    else if (key === "dnsFix") wg.installDnsFix()
+    else if (key === "dnsFix" || key === "dnsUpdate") wg.installDnsFix()
   }
 
   implicitWidth: button.implicitWidth
@@ -429,6 +439,18 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
+          // Several tunnels all taking every lookup: say who decides.
+          Text {
+            textFormat: Text.PlainText
+            visible: wg.dnsCatchAll.length > 1
+            width: parent.width
+            text: strings.t("dns.shared").arg(wg.dnsCatchAll.map(function(t) { return t.name }).join(", "))
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
           // ---- live stats for the selected tunnel ----------------------
           Column {
             visible: root.selected !== null && root.selectedActive
@@ -484,7 +506,9 @@ Panel {
                   var t = root.selected
                   if (!t) return "--"
                   if (dnsStatus === "none") return t.dnsInUse && t.dnsInUse.length > 0 ? t.dnsInUse.join(", ") : strings.t("dns.system")
-                  return strings.t(dnsStatus === "ok" ? "dns.applied" : "dns.notApplied").arg(t.dns.join(", "))
+                  if (dnsStatus !== "ok") return strings.t("dns.notApplied").arg(t.dns.join(", "))
+                  var role = Model.dnsRole(t)
+                  return strings.t(role === "all" ? "dns.allLookups" : "dns.ownDomains").arg(t.dns.join(", "))
                 }
                 color: dnsStatus === "missing" ? root.urgent : root.foreground
               }
@@ -504,14 +528,24 @@ Panel {
             }
 
             // Throughput sparkline: receive in accent, send in foreground.
-            Item {
+            Column {
               visible: root.showGraph
               width: parent.width
-              height: Style.space(56)
+              spacing: Style.space(4)
+
+              Text {
+                textFormat: Text.PlainText
+                anchors.right: parent.right
+                text: strings.t("graph.legend")
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
 
               Canvas {
                 id: graph
-                anchors.fill: parent
+                width: parent.width
+                height: Style.space(48)
                 property var samples: wg.history
                 property color rxColor: root.accent
                 property color txColor: root.dim
@@ -521,16 +555,16 @@ Panel {
                   var ctx = getContext("2d")
                   ctx.reset()
                   var data = samples || []
-                  var n = wg.historyLength
+                  var span = wg.historyWindowMs
+                  var right = data.length > 0 ? data[data.length - 1].at : 0
                   var max = 1024
                   for (var i = 0; i < data.length; i++) max = Math.max(max, data[i].rx, data[i].tx)
-                  var step = width / Math.max(1, n - 1)
-                  var offset = n - data.length
+                  function xAt(j) { return width * (1 - (right - data[j].at) / span) }
                   function line(key, color, fill) {
                     if (data.length < 2) return
                     ctx.beginPath()
                     for (var j = 0; j < data.length; j++) {
-                      var x = (offset + j) * step
+                      var x = xAt(j)
                       var y = height - 1 - (data[j][key] / max) * (height - 4)
                       if (j === 0) ctx.moveTo(x, y)
                       else ctx.lineTo(x, y)
@@ -539,8 +573,8 @@ Panel {
                     ctx.lineWidth = 1.5
                     ctx.stroke()
                     if (fill) {
-                      ctx.lineTo((offset + data.length - 1) * step, height)
-                      ctx.lineTo(offset * step, height)
+                      ctx.lineTo(xAt(data.length - 1), height)
+                      ctx.lineTo(xAt(0), height)
                       ctx.closePath()
                       ctx.fillStyle = Qt.rgba(color.r, color.g, color.b, 0.15)
                       ctx.fill()
@@ -549,16 +583,6 @@ Panel {
                   line("tx", txColor, false)
                   line("rx", rxColor, true)
                 }
-              }
-
-              Text {
-                textFormat: Text.PlainText
-                anchors.top: parent.top
-                anchors.right: parent.right
-                text: strings.t("graph.legend")
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
               }
             }
           }
@@ -641,7 +665,7 @@ Panel {
                 required property string modelData
                 required property int index
                 text: strings.t("action." + modelData)
-                iconText: ({ "import": "󰈔", "publicIp": "󰩟", "dnsFix": "󰇖", "stats": "󰒃" })[modelData] || ""
+                iconText: ({ "import": "󰈔", "publicIp": "󰩟", "dnsFix": "󰇖", "dnsUpdate": "󰇖", "stats": "󰒃" })[modelData] || ""
                 tooltipText: strings.t("action." + modelData + ".hint")
                 bordered: true
                 foreground: root.foreground
@@ -728,6 +752,15 @@ Panel {
               value: String(root.settings.defaultTunnel || "")
               display: value === "" ? strings.t("settings.lastUsed") : value
               onChosen: root.setSetting("defaultTunnel", root.cycle(root.defaultTunnelOptions, value))
+            }
+
+            SettingChoice {
+              visible: wg.dnsChoices.length > 0
+              label: strings.t("settings.dnsTunnel")
+              hint: strings.t("settings.dnsTunnel.hint")
+              value: wg.preferredDns ? wg.preferredDns.id : ""
+              display: wg.preferredDns ? wg.preferredDns.name : strings.t("settings.dnsTunnel.auto")
+              onChosen: root.chooseDnsTunnel()
             }
 
             SettingToggle {
@@ -865,7 +898,7 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
           font.bold: row.on
-          elide: Text.ElideRight
+          wrapMode: Text.Wrap
         }
 
         Text {
@@ -874,7 +907,8 @@ Panel {
           text: {
             var t = row.tunnel
             if (!t) return ""
-            var parts = [root.stateLabel(t), root.kindLabel(t)]
+            var parts = [root.stateLabel(t)]
+            if (root.kindLabel(t) !== "") parts.push(root.kindLabel(t))
             var addr = Model.firstAddress(t)
             if (addr !== "") parts.push(addr)
             if (row.on) {
@@ -887,7 +921,7 @@ Panel {
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
+          wrapMode: Text.Wrap
         }
       }
 
@@ -970,7 +1004,7 @@ Panel {
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
-          elide: Text.ElideRight
+          wrapMode: Text.Wrap
         }
 
         Text {
@@ -980,7 +1014,7 @@ Panel {
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
+          wrapMode: Text.Wrap
         }
 
         Text {
@@ -991,7 +1025,7 @@ Panel {
           color: peerRow.health === "stale" || peerRow.health === "never" ? root.urgent : root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
+          wrapMode: Text.Wrap
         }
       }
 
@@ -1141,6 +1175,6 @@ Panel {
     color: root.foreground
     font.family: root.fontFamily
     font.pixelSize: Style.font.bodySmall
-    elide: Text.ElideRight
+    wrapMode: Text.Wrap
   }
 }
