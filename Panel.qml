@@ -916,7 +916,8 @@ Panel {
               parts.push("↓ " + root.fmtRate(r.rx) + "  ↑ " + root.fmtRate(r.tx))
             }
             if (t.kind === "nm" && t.autoconnect) parts.push(strings.t("tunnel.auto"))
-            return parts.join(" · ")
+            // Wrap only between the " · " pieces, never inside "297.2 KB/s".
+            return parts.map(function(p) { return String(p).replace(/ /g, "\u00a0").replace(/\//g, "/\u2060") }).join(" · ")
           }
           color: root.dim
           font.family: root.fontFamily
