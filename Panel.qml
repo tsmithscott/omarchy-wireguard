@@ -140,6 +140,27 @@ Panel {
     return wg.autoPublicIp ? strings.t("stat.checking") : strings.t("stat.checkHint")
   }
 
+  // Omarchy has no settings screen for plugins (the manifest schema is never
+  // rendered), so the panel edits its own shell.json entry.
+  property bool settingsOpen: false
+
+  function setSetting(key, value) {
+    var v = {}
+    v[key] = value
+    persist(v)
+  }
+
+  function cycle(options, current) {
+    var i = options.indexOf(current)
+    return options[(i + 1) % options.length]
+  }
+
+  readonly property var defaultTunnelOptions: {
+    var names = [""]
+    for (var i = 0; i < wg.tunnels.length; i++) if (Model.canToggle(wg.tunnels[i])) names.push(wg.tunnels[i].name)
+    return names
+  }
+
   function runAction(key) {
     if (key === "import") wg.importConfig()
     else if (key === "publicIp") wg.checkPublicIp()
@@ -597,6 +618,115 @@ Panel {
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
           }
+
+          // ---- settings --------------------------------------------------
+          PanelSeparator { foreground: root.foreground }
+
+          CursorSurface {
+            width: parent.width
+            foreground: root.foreground
+            implicitHeight: settingsHeader.implicitHeight + Style.spacing.rowPaddingX
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.settingsOpen = !root.settingsOpen
+            }
+
+            RowLayout {
+              id: settingsHeader
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(10)
+              anchors.rightMargin: Style.space(10)
+
+              Text {
+                textFormat: Text.PlainText
+                text: "󰒓  " + strings.t("settings.title")
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                Layout.fillWidth: true
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                text: root.settingsOpen ? "󰅀" : "󰅂"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.icon
+              }
+            }
+          }
+
+          Column {
+            visible: root.settingsOpen
+            width: parent.width
+            spacing: Style.space(8)
+
+            SettingChoice {
+              label: strings.t("settings.barLabel")
+              value: String(root.settings.barLabel || "Icon only")
+              display: strings.t("settings.barLabel." + value)
+              onChosen: root.setSetting("barLabel", root.cycle(["Icon only", "Tunnel name", "Speed"], value))
+            }
+
+            SettingChoice {
+              label: strings.t("settings.defaultTunnel")
+              hint: strings.t("settings.defaultTunnel.hint")
+              value: String(root.settings.defaultTunnel || "")
+              display: value === "" ? strings.t("settings.lastUsed") : value
+              onChosen: root.setSetting("defaultTunnel", root.cycle(root.defaultTunnelOptions, value))
+            }
+
+            SettingToggle {
+              label: strings.t("settings.autoPublicIp")
+              hint: strings.t("settings.autoPublicIp.hint")
+              checked: root.settings.autoPublicIp !== false
+              onFlipped: root.setSetting("autoPublicIp", !checked)
+            }
+
+            SettingToggle {
+              label: strings.t("settings.showGraph")
+              checked: root.settings.showGraph !== false
+              onFlipped: root.setSetting("showGraph", !checked)
+            }
+
+            SettingToggle {
+              label: strings.t("settings.exclusive")
+              hint: strings.t("settings.exclusive.hint")
+              checked: root.settings.exclusive === true
+              onFlipped: root.setSetting("exclusive", !checked)
+            }
+
+            SettingToggle {
+              label: strings.t("settings.notify")
+              checked: root.settings.notifyChanges === true
+              onFlipped: root.setSetting("notifyChanges", !checked)
+            }
+
+            SettingToggle {
+              label: strings.t("settings.offerPeerStats")
+              hint: strings.t("settings.offerPeerStats.hint")
+              checked: root.settings.offerPeerStats !== false
+              onFlipped: root.setSetting("offerPeerStats", !checked)
+            }
+
+            SettingText {
+              label: strings.t("settings.exclude")
+              hint: strings.t("settings.exclude.hint")
+              value: String(root.settings.excludeInterfaces === undefined ? "wt0" : root.settings.excludeInterfaces)
+              onCommitted: function(text) { root.setSetting("excludeInterfaces", text) }
+            }
+
+            SettingText {
+              label: strings.t("settings.wgQuick")
+              hint: strings.t("settings.wgQuick.hint")
+              value: String(root.settings.wgQuickConfigs || "")
+              onCommitted: function(text) { root.setSetting("wgQuickConfigs", text) }
+            }
+          }
         }
       }
 
@@ -823,6 +953,106 @@ Panel {
         Layout.alignment: Qt.AlignVCenter
         onClicked: wg.copy(peerRow.peer ? peerRow.peer.publicKey : "")
       }
+    }
+  }
+
+  component SettingLabel: ColumnLayout {
+    property string label: ""
+    property string hint: ""
+    Layout.fillWidth: true
+    spacing: Style.space(1)
+
+    Text {
+      textFormat: Text.PlainText
+      Layout.fillWidth: true
+      text: parent.label
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      wrapMode: Text.WordWrap
+    }
+
+    Text {
+      textFormat: Text.PlainText
+      Layout.fillWidth: true
+      visible: parent.hint !== ""
+      text: parent.hint
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+    }
+  }
+
+  component SettingToggle: RowLayout {
+    id: toggleRow
+    property string label: ""
+    property string hint: ""
+    property bool checked: false
+    signal flipped()
+    width: parent ? parent.width : 0
+    spacing: Style.space(10)
+
+    SettingLabel { label: toggleRow.label; hint: toggleRow.hint }
+
+    ToggleSwitch {
+      checked: toggleRow.checked
+      cursorRing: false
+      foreground: root.foreground
+      Layout.alignment: Qt.AlignVCenter
+      onToggled: toggleRow.flipped()
+    }
+  }
+
+  component SettingChoice: RowLayout {
+    id: choiceRow
+    property string label: ""
+    property string hint: ""
+    property string value: ""
+    property string display: value
+    signal chosen()
+    width: parent ? parent.width : 0
+    spacing: Style.space(10)
+
+    SettingLabel { label: choiceRow.label; hint: choiceRow.hint }
+
+    Button {
+      text: choiceRow.display
+      iconText: "󰑐"
+      tooltipText: strings.t("settings.cycle")
+      bordered: true
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      fontSize: Style.font.bodySmall
+      Layout.alignment: Qt.AlignVCenter
+      onClicked: choiceRow.chosen()
+    }
+  }
+
+  component SettingText: ColumnLayout {
+    id: textRow
+    property string label: ""
+    property string hint: ""
+    property string value: ""
+    signal committed(string text)
+    width: parent ? parent.width : 0
+    spacing: Style.space(4)
+
+    SettingLabel { label: textRow.label; hint: textRow.hint }
+
+    TextField {
+      id: field
+      Layout.fillWidth: true
+      foreground: root.foreground
+      text: textRow.value
+      // Save on Enter or when focus leaves, only if something changed.
+      function commit() {
+        var next = text.trim()
+        if (next !== textRow.value) textRow.committed(next)
+      }
+      onAccepted: { commit(); field.focus = false }
+      onEditingFinished: commit()
+      Keys.onEscapePressed: { text = textRow.value; field.focus = false }
     }
   }
 

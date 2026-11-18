@@ -17,6 +17,7 @@ Requirements: Omarchy with shell plugin support, NetworkManager (Omarchy's defau
 - **Bar:** VPN icon, slashed when nothing is up, with a `!` badge when a peer stops handshaking. Optional label showing the tunnel name or live ↓/↑ speed. The hover tooltip shows the active tunnels and their speeds.
   Left click opens the panel, right click runs the master toggle, middle click refreshes.
 - **Panel:** a master switch, plus for the selected tunnel: live receive/send rate, total received/sent, address, uptime, listen port, MTU, time since data was last received, and a 60-second throughput graph. Your public exit IP (with city and provider) is shown at the top and refreshes automatically. Every tunnel has its own switch, an autoconnect toggle, and a remove button (with confirmation; Delete key too). Removing a NetworkManager tunnel deletes its profile; removing a wg-quick entry just hides it, since `/etc/wireguard` is root-owned. Peers show their endpoint and allowed IPs, plus handshake age and per-peer traffic when peer stats are on. The panel also has "Import config" (a file chooser, then `nmcli connection import`).
+- **Settings:** a collapsible Settings section at the bottom of the panel covers bar label, default tunnel, automatic public IP, graph, one-tunnel-at-a-time, notifications, peer-stats button, hidden interfaces, and wg-quick configs. Omarchy has no settings screen for plugins, so they live in the panel. They're saved to this widget's entry in `~/.config/omarchy/shell.json`, so `omarchy bar set tsmithscott.wireguard <key> <value>` works too.
 - **Keys:** j/k or arrows move, Enter toggles, `t` master toggle, `c` copy address, `i` import, `p` public IP, `r` refresh.
 
 ## Tunnel sources
@@ -47,7 +48,7 @@ omarchy-shell tsmithscott.wireguard status | toggleAll | up <name> | down <name>
 
 ## Network access
 
-The plugin makes one kind of network request: an HTTPS GET to `https://ipinfo.io/json` to look up your public IP (6s timeout, 4 KB cap, response validated). It runs when the panel opens (at most once a minute) and a couple of seconds after any tunnel goes up or down. Turn off "Look up public IP automatically" and it only runs when you click the button.
+The plugin makes one kind of network request: an HTTPS GET to `https://ipinfo.io/json` to look up your public IP (6s timeout, 4 KB cap, response validated). It runs when the panel opens (at most once a minute) and a couple of seconds after any tunnel goes up or down. Turn off "Look up public IP automatically" in the panel's Settings section and it only runs when you click ↻.
 
 ## Without peer stats
 
