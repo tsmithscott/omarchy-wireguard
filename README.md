@@ -4,7 +4,7 @@ A bar widget for [Omarchy](https://omarchy.org/) that shows your WireGuard tunne
 
 > Community project. Not affiliated with or endorsed by WireGuard or Jason A. Donenfeld.
 
-![The WireGuard panel open from the Omarchy bar, showing two connected tunnels, live throughput and peer details](preview.png)
+![The WireGuard panel open from the Omarchy bar, showing two connected tunnels, live throughput and peer details](docs/panel.png)
 
 <sub>Screenshot uses example data (documentation IP ranges).</sub>
 
