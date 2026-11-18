@@ -1,0 +1,78 @@
+#!/bin/bash
+# Status snapshot for the WireGuard bar plugin. Runs as the logged-in user and
+# never asks for a password. Prints one tab-separated record per line:
+#
+#   I  <ifname> <rx_bytes> <tx_bytes> <mtu> <addr,addr,...>   every mode
+#   C  <nmcli terse line: NAME:UUID:TYPE:DEVICE:STATE:FILENAME:AUTOCONNECT>   full
+#   N  <uuid> <field> <value>                                  full (NM config)
+#   D  <wg show all dump line, keys redacted>                  full, if enabled
+#   S  ok|fail|absent                                          full (peer stats)
+#   R  <ifname> <dns servers in use, space-separated>          full
+#   G  <global-dns: yes|no> <tunnel-dns dispatcher: yes|no>    full
+#
+# Usage: wg-status [fast|full] [stats]
+
+set -u
+mode=${1:-fast}
+want_stats=${2:-}
+tab=$'\t'
+
+for dir in /sys/class/net/*; do
+  [[ -r $dir/uevent ]] || continue
+  grep -qx 'DEVTYPE=wireguard' "$dir/uevent" 2>/dev/null || continue
+  ifname=${dir##*/}
+  rx=$(<"$dir/statistics/rx_bytes")
+  tx=$(<"$dir/statistics/tx_bytes")
+  mtu=$(<"$dir/mtu")
+  addrs=$(ip -o addr show dev "$ifname" 2>/dev/null | awk '{print $4}' | paste -sd, -)
+  printf 'I\t%s\t%s\t%s\t%s\t%s\n' "$ifname" "$rx" "$tx" "$mtu" "$addrs"
+done
+
+[[ $mode == full ]] || exit 0
+
+# What systemd-resolved is actually using on each tunnel ("Link 9 (wg0): a b").
+for dir in /sys/class/net/*; do
+  grep -qx 'DEVTYPE=wireguard' "$dir/uevent" 2>/dev/null || continue
+  ifname=${dir##*/}
+  in_use=$(resolvectl dns "$ifname" 2>/dev/null | sed -n 's/^Link [0-9]* ([^)]*):[[:space:]]*//p' | head -1)
+  printf 'R\t%s\t%s\n' "$ifname" "$in_use"
+done
+
+# A NetworkManager [global-dns] block (omarchy dns writes one) makes NM ignore
+# per-connection DNS; the dispatcher script puts tunnel DNS back.
+global=no
+grep -qs '^[[:space:]]*\[global-dns' /etc/NetworkManager/NetworkManager.conf /etc/NetworkManager/conf.d/*.conf && global=yes
+dispatcher=no
+[[ -x /etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns ]] && dispatcher=yes
+printf 'G\t%s\t%s\n' "$global" "$dispatcher"
+
+if command -v nmcli >/dev/null 2>&1; then
+  while IFS= read -r line; do
+    printf 'C\t%s\n' "$line"
+    # UUID is the second terse field; UUIDs never contain escaped colons.
+    rest=${line#*[!\\]:}
+    uuid=${rest%%:*}
+    [[ $uuid =~ ^[0-9a-fA-F-]{36}$ ]] || continue
+    # Volatile (/run) profiles belong to whatever created the interface
+    # (wg-quick, NetBird, ...); their config is not ours to read.
+    [[ $line == *:/run/* ]] && continue
+    for field in wireguard.peers ipv4.addresses ipv6.addresses wireguard.listen-port ipv4.dns ipv6.dns; do
+      value=$(nmcli -g "$field" connection show uuid "$uuid" 2>/dev/null | tr '\n' ' ')
+      printf 'N\t%s\t%s\t%s\n' "$uuid" "$field" "${value% }"
+    done
+  done < <(nmcli -t -f NAME,UUID,TYPE,DEVICE,STATE,FILENAME,AUTOCONNECT connection show 2>/dev/null | grep -E '^([^:]|\\:)*:[0-9a-fA-F-]{36}:wireguard:')
+fi
+
+if [[ $want_stats == stats ]]; then
+  helper=/usr/local/bin/omarchy-wg-dump
+  if [[ -x $helper ]]; then
+    if out=$(sudo -n "$helper" 2>/dev/null); then
+      [[ -n $out ]] && printf '%s\n' "$out" | sed "s/^/D${tab}/"
+      echo "S${tab}ok"
+    else
+      echo "S${tab}fail"
+    fi
+  else
+    echo "S${tab}absent"
+  fi
+fi

@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "id": "tsmithscott.wireguard",
+  "name": "WireGuard",
+  "version": "1.1.0",
+  "author": "tsmithscott",
+  "license": "MIT",
+  "description": "WireGuard tunnel status, live speed and traffic stats, peer handshakes, and one-click toggles in the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "WireGuard",
+    "description": "Toggle WireGuard tunnels, watch throughput, and inspect peers.",
+    "category": "Network",
+    "aliases": [
+      "wireguard",
+      "wg",
+      "vpn"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 10,
+      "barLabel": "Icon only",
+      "showGraph": true,
+      "defaultTunnel": "",
+      "exclusive": false,
+      "excludeInterfaces": "wt0",
+      "wgQuickConfigs": "",
+      "notifyChanges": false,
+      "autoPublicIp": true,
+      "offerPeerStats": true
+    },
+    "schema": [
+      {
+        "key": "barLabel",
+        "type": "enum",
+        "label": "Bar label",
+        "options": [
+          "Icon only",
+          "Tunnel name",
+          "Speed"
+        ],
+        "defaultValue": "Icon only"
+      },
+      {
+        "key": "showGraph",
+        "type": "boolean",
+        "label": "Show throughput graph",
+        "defaultValue": true
+      },
+      {
+        "key": "autoPublicIp",
+        "type": "boolean",
+        "label": "Look up public IP automatically",
+        "description": "Asks ipinfo.io for your exit address when the panel opens (at most once a minute) and whenever a tunnel goes up or down.",
+        "defaultValue": true
+      },
+      {
+        "key": "offerPeerStats",
+        "type": "boolean",
+        "label": "Offer peer stats setup",
+        "description": "Show the \"Enable peer stats\" button (needs your password once).",
+        "defaultValue": true
+      },
+      {
+        "key": "defaultTunnel",
+        "type": "string",
+        "label": "Default tunnel",
+        "defaultValue": "",
+        "description": "Tunnel the master switch and right-click bring up. Empty uses the last one you connected."
+      },
+      {
+        "key": "exclusive",
+        "type": "boolean",
+        "label": "One tunnel at a time",
+        "description": "Bringing a tunnel up takes the others down.",
+        "defaultValue": false
+      },
+      {
+        "key": "excludeInterfaces",
+        "type": "string",
+        "label": "Hide interfaces",
+        "description": "Comma-separated. wt0 is NetBird's interface, which has its own widget.",
+        "defaultValue": "wt0"
+      },
+      {
+        "key": "wgQuickConfigs",
+        "type": "string",
+        "label": "wg-quick configs",
+        "description": "Comma-separated names from /etc/wireguard (without .conf). Toggled through pkexec.",
+        "defaultValue": ""
+      },
+      {
+        "key": "notifyChanges",
+        "type": "boolean",
+        "label": "Notify on connect/disconnect",
+        "defaultValue": false
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Config refresh interval (seconds)",
+        "min": 3,
+        "max": 3600,
+        "step": 1,
+        "defaultValue": 10
+      }
+    ]
+  }
+}

@@ -1,0 +1,61 @@
+#!/bin/bash
+# NetworkManager dispatcher script, installed by the Omarchy WireGuard bar
+# plugin (tsmithscott.wireguard) as
+#   /etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns
+#
+# NetworkManager ignores every connection's own DNS while a [global-dns] block
+# exists, and `omarchy dns` writes one. So a WireGuard profile's DNS= never
+# reaches systemd-resolved. This puts it there for the tunnel's interface, the
+# way wg-quick does:
+#   - the profile's ipv4.dns / ipv6.dns servers
+#   - its routing domains: if it lists any "~corp.example" style domains, only
+#     those go through the tunnel (split DNS); otherwise "~." sends every
+#     lookup through it while it is up, so nothing leaks to the system DNS
+#   - its plain search domains, DNS-over-TLS off for that link (tunnel
+#     resolvers rarely speak it), and the cache flushed
+# It runs on "up" for WireGuard connections and re-applies on "dns-change",
+# because NetworkManager may push its own (empty) link DNS again later.
+
+set -u
+export PATH=/usr/bin:/usr/sbin
+
+apply() {
+  local uuid=$1 iface=$2
+  [[ $uuid =~ ^[0-9a-fA-F-]{36}$ && $iface =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]] || return 0
+
+  local raw servers=() domains=() routing=0 token
+  raw=$(nmcli -g ipv4.dns,ipv6.dns connection show uuid "$uuid" 2>/dev/null | tr ',\n' '  ')
+  for token in $raw; do
+    [[ $token =~ ^[0-9a-fA-F:.]{2,45}$ ]] && servers+=("$token")
+  done
+  ((${#servers[@]})) || return 0
+
+  raw=$(nmcli -g ipv4.dns-search,ipv6.dns-search connection show uuid "$uuid" 2>/dev/null | tr ',\n' '  ')
+  for token in $raw; do
+    [[ $token == "~" || $token == "~." ]] && continue
+    [[ $token =~ ^~?[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$ ]] || continue
+    [[ $token == "~"* ]] && routing=1
+    domains+=("$token")
+  done
+  ((routing)) || domains+=("~.")
+
+  resolvectl dns "$iface" "${servers[@]}"
+  resolvectl domain "$iface" "${domains[@]}"
+  resolvectl default-route "$iface" yes
+  resolvectl dnsovertls "$iface" no
+  resolvectl flush-caches
+}
+
+case "${2:-}" in
+up)
+  [[ -n ${CONNECTION_UUID:-} ]] || exit 0
+  [[ $(nmcli -g connection.type connection show uuid "$CONNECTION_UUID" 2>/dev/null) == wireguard ]] || exit 0
+  apply "$CONNECTION_UUID" "$1"
+  ;;
+dns-change)
+  while IFS=: read -r uuid type device; do
+    [[ $type == wireguard && -n $device ]] && apply "$uuid" "$device"
+  done < <(nmcli -t -f UUID,TYPE,DEVICE connection show --active 2>/dev/null)
+  ;;
+esac
+exit 0

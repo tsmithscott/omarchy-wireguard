@@ -1,0 +1,22 @@
+#!/bin/bash
+# Removes everything the WireGuard plugin ever installed outside your home
+# directory. Run this BEFORE `omarchy plugin remove tsmithscott.wireguard`
+# (or any time), through pkexec:
+#
+#   pkexec ~/.config/omarchy/plugins/tsmithscott.wireguard/bin/uninstall-system-files
+#
+# NetworkManager profiles you imported are yours and are left alone; delete
+# them in the panel first, or with `nmcli connection delete <name>`.
+
+set -euo pipefail
+export PATH=/usr/bin:/usr/sbin
+
+for f in \
+  /etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns \
+  /usr/local/bin/omarchy-wg-dump \
+  /etc/sudoers.d/omarchy-wg-dump; do
+  if [[ -e $f ]]; then
+    rm -f -- "$f"
+    echo "Removed $f"
+  fi
+done

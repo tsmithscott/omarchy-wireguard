@@ -1,0 +1,30 @@
+#!/bin/bash
+# Installs (or removes) the WireGuard tunnel-DNS dispatcher script so a
+# WireGuard profile's DNS servers actually get used. See tunnel-dns-dispatcher.
+#
+# Run through pkexec:  pkexec setup-tunnel-dns <path-to-tunnel-dns-dispatcher>
+# Undo:                pkexec setup-tunnel-dns --remove
+
+set -euo pipefail
+export PATH=/usr/bin:/usr/sbin
+
+target=/etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns
+source=${1:?usage: setup-tunnel-dns <dispatcher-script> | --remove}
+
+if [[ $source == --remove ]]; then
+  rm -f -- "$target"
+  echo "Removed $target"
+  exit 0
+fi
+
+[[ -f $source ]] || { echo "No such file: $source" >&2; exit 2; }
+bash -n "$source"
+# NetworkManager only runs dispatcher scripts that are root-owned and not
+# writable by anyone else; copying (not linking) keeps later edits to the
+# user-owned plugin from running as root.
+install -o root -g root -m 755 "$source" "$target"
+echo "Installed $target"
+
+
+# Apply to tunnels that are already up.
+"$target" "" dns-change || true
