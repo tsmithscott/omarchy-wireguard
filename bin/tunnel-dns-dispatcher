@@ -3,6 +3,7 @@
 # plugin (tsmithscott.wireguard) as
 #   /etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns
 # hook-version: 2
+# omarchy-plugin-file: tsmithscott.wireguard
 #
 # NetworkManager ignores every connection's own DNS while a [global-dns] block
 # exists, and `omarchy dns` writes one. So a WireGuard profile's DNS= never

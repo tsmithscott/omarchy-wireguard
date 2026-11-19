@@ -48,6 +48,8 @@ The kernel only shows handshake times and per-peer counters to root. "Enable pee
 
 Undo: `pkexec ~/.config/omarchy/plugins/tsmithscott.wireguard/bin/setup-peer-stats --remove`
 
+If either path already holds a file the plugin didn't install, setup stops without changing anything (see [Files outside your home directory](#files-outside-your-home-directory)).
+
 ## IPC
 
 ```
@@ -64,7 +66,7 @@ Connection health still works without the root helper. If a tunnel with keepaliv
 
 ## Tests
 
-`node test/model.test.js`
+`node test/model.test.js` and `bash test/system-files.test.sh`
 
 ## Tunnel DNS
 
@@ -78,6 +80,8 @@ Connection health still works without the root helper. If a tunnel with keepaliv
 Your system DNS choice is untouched and still applies whenever no tunnel is up. The hook works for `nmcli connection up` too, not only the plugin.
 
 Undo: `pkexec ~/.config/omarchy/plugins/tsmithscott.wireguard/bin/setup-tunnel-dns --remove`
+
+If something else is already installed at that path, the plugin leaves it in place and doesn't offer the fix.
 
 If you installed the hook from an older version of the plugin, the panel offers **Update DNS hook** (one password prompt) so it follows the Tunnel DNS setting.
 
@@ -97,4 +101,8 @@ The peer-stats helper and the tunnel-DNS hook are root-owned copies outside the 
 pkexec ~/.config/omarchy/plugins/tsmithscott.wireguard/bin/uninstall-system-files
 ```
 
-That removes `/etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns`, `/usr/local/bin/omarchy-wg-dump`, and `/etc/sudoers.d/omarchy-wg-dump`. Your imported tunnels are NetworkManager profiles and stay until you delete them.
+That removes `/etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns`, `/usr/local/bin/omarchy-wg-dump`, and `/etc/sudoers.d/omarchy-wg-dump`, but only the ones the plugin installed. Your imported tunnels are NetworkManager profiles and stay until you delete them.
+
+## Files outside your home directory
+
+The plugin only replaces or deletes a file at the three paths above if it can tell it installed that file: a regular, root-owned file (not a symlink) that either carries the line `# omarchy-plugin-file: tsmithscott.wireguard` or matches, byte for byte, a file an earlier version installed. Anything else there, such as an administrator's own hook or sudoers rule, is left in place. Setup reports it and stops, and uninstall says it skipped it. The checks are in `bin/system-files.bash`.

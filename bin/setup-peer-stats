@@ -10,36 +10,45 @@
 #
 # Run through pkexec:  pkexec setup-peer-stats <user>
 # Undo:                pkexec setup-peer-stats --remove
+#
+# Never replaces or removes a file at either path that this plugin did not
+# install (see system-files.bash).
 
 set -euo pipefail
+export PATH=/usr/bin:/usr/sbin
+source -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/system-files.bash"
 
-helper=/usr/local/bin/omarchy-wg-dump
-rule=/etc/sudoers.d/omarchy-wg-dump
+helper=$WG_PLUGIN_HELPER
+rule=$WG_PLUGIN_RULE
 user=${1:?usage: setup-peer-stats <user> | --remove}
 
 if [[ $user == --remove ]]; then
-  rm -f -- "$helper" "$rule"
-  echo "Removed $helper and $rule"
+  wg_plugin_remove "$helper"
+  wg_plugin_remove "$rule"
   exit 0
 fi
 
 [[ $user =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "Invalid user name" >&2; exit 2; }
 id -- "$user" >/dev/null
+# Check both paths before touching either.
+wg_plugin_may_write "$helper"
+wg_plugin_may_write "$rule"
 
 tmp=$(mktemp)
 trap 'rm -f -- "$tmp"' EXIT
 
-cat >"$tmp" <<'HELPER'
+cat >"$tmp" <<HELPER
 #!/bin/bash
+$WG_PLUGIN_MARKER
 # Read-only WireGuard runtime stats for the Omarchy WireGuard plugin.
 # Interface lines lose their private key, peer lines their preshared key.
 set -euo pipefail
-/usr/bin/wg show all dump | /usr/bin/awk 'BEGIN { FS = OFS = "\t" } NF == 5 { $2 = "(hidden)" } NF == 9 { $3 = "(hidden)" } { print }'
+/usr/bin/wg show all dump | /usr/bin/awk 'BEGIN { FS = OFS = "\\t" } NF == 5 { \$2 = "(hidden)" } NF == 9 { \$3 = "(hidden)" } { print }'
 HELPER
 install -d -m 755 /usr/local/bin
 install -o root -g root -m 755 "$tmp" "$helper"
 
-printf '%s ALL=(root) NOPASSWD: %s ""\nDefaults!%s !log_allowed\n' "$user" "$helper" "$helper" >"$tmp"
+{ printf '%s\n' "$WG_PLUGIN_MARKER"; wg_plugin_legacy_rule "$user"; } >"$tmp"
 visudo -cqf "$tmp"
 install -o root -g root -m 440 "$tmp" "$rule"
 

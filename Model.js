@@ -91,7 +91,7 @@ function parseNmPeers(value) {
 }
 
 function emptySnapshot() {
-  return { ifaces: {}, conns: [], nm: {}, dump: {}, stats: "", resolved: {}, domains: {}, globalDns: false, dnsFix: false, hookVersion: 0, full: false }
+  return { ifaces: {}, conns: [], nm: {}, dump: {}, stats: "", resolved: {}, domains: {}, globalDns: false, dnsFix: false, dnsFixForeign: false, hookVersion: 0, full: false }
 }
 
 function parseSnapshot(raw) {
@@ -132,6 +132,8 @@ function parseSnapshot(raw) {
     } else if (tag === "G" && f.length >= 3) {
       snap.globalDns = f[1] === "yes"
       snap.dnsFix = f[2] === "yes"
+      // Someone else's script at the hook's path: leave it alone, offer nothing.
+      snap.dnsFixForeign = f[2] === "foreign"
       snap.hookVersion = snap.dnsFix ? Math.max(1, toNumber(f[3])) : 0
     } else if (tag === "S") {
       snap.full = true
@@ -172,7 +174,7 @@ function mergeSnapshot(previous, next) {
   return {
     ifaces: next.ifaces, conns: prev.conns, nm: prev.nm, dump: prev.dump, stats: prev.stats,
     resolved: prev.resolved, domains: prev.domains || {}, globalDns: prev.globalDns, dnsFix: prev.dnsFix,
-    hookVersion: prev.hookVersion || 0, full: false
+    dnsFixForeign: prev.dnsFixForeign === true, hookVersion: prev.hookVersion || 0, full: false
   }
 }
 

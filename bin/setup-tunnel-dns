@@ -4,27 +4,31 @@
 #
 # Run through pkexec:  pkexec setup-tunnel-dns <path-to-tunnel-dns-dispatcher>
 # Undo:                pkexec setup-tunnel-dns --remove
+#
+# Never replaces or removes a dispatcher script at that path that this plugin
+# did not install (see system-files.bash).
 
 set -euo pipefail
 export PATH=/usr/bin:/usr/sbin
+source -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/system-files.bash"
 
-target=/etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns
+target=$WG_PLUGIN_HOOK
 source=${1:?usage: setup-tunnel-dns <dispatcher-script> | --remove}
 
 if [[ $source == --remove ]]; then
-  rm -f -- "$target"
-  echo "Removed $target"
+  wg_plugin_remove "$target"
   exit 0
 fi
 
 [[ -f $source ]] || { echo "No such file: $source" >&2; exit 2; }
+grep -qxF -- "$WG_PLUGIN_MARKER" "$source" || { echo "$source is not the plugin's dispatcher script" >&2; exit 2; }
 bash -n "$source"
+wg_plugin_may_write "$target"
 # NetworkManager only runs dispatcher scripts that are root-owned and not
 # writable by anyone else; copying (not linking) keeps later edits to the
 # user-owned plugin from running as root.
 install -o root -g root -m 755 "$source" "$target"
 echo "Installed $target"
-
 
 # Apply to tunnels that are already up.
 "$target" "" dns-change || true

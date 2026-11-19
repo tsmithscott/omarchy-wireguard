@@ -64,7 +64,9 @@ Item {
   // System DNS (`omarchy dns`) makes NetworkManager drop per-tunnel DNS; the
   // dispatcher fix restores it. Only worth offering when some tunnel has DNS.
   readonly property bool dnsFixInstalled: snapshot.dnsFix === true
-  readonly property bool dnsFixNeeded: snapshot.globalDns === true && !dnsFixInstalled
+  // An administrator's own script at the hook's path: never offer to replace it.
+  readonly property bool dnsFixForeign: snapshot.dnsFixForeign === true
+  readonly property bool dnsFixNeeded: snapshot.globalDns === true && !dnsFixInstalled && !dnsFixForeign
     && tunnels.some(function(t) { return t.kind === "nm" && t.dns.length > 0 })
   // An older hook gives every tunnel "~." and ignores the DNS choice below.
   readonly property bool dnsFixOutdated: dnsFixInstalled && (snapshot.hookVersion || 0) < Model.DNS_HOOK_VERSION

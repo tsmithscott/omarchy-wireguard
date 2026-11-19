@@ -200,6 +200,11 @@ for (const file of fs.readdirSync(path.join(__dirname, "..")).filter(f => f.ends
   assert.strictEqual(snap.hookVersion, 2)
   assert.strictEqual(M.parseSnapshot("G\tyes\tyes").hookVersion, 1)
   assert.strictEqual(M.parseSnapshot("G\tyes\tno\t0").hookVersion, 0)
+  const foreign = M.parseSnapshot("G\tyes\tforeign\t0")
+  assert.strictEqual(foreign.dnsFix, false)
+  assert.strictEqual(foreign.dnsFixForeign, true)
+  assert.strictEqual(foreign.hookVersion, 0)
+  assert.strictEqual(M.mergeSnapshot(foreign, M.parseSnapshot("I\twg0\t1\t2\t1420\t")).dnsFixForeign, true)
   assert.strictEqual(M.mergeSnapshot(snap, M.parseSnapshot("I\twg0\t1\t2\t1420\t")).hookVersion, 2)
 
   const mk = (id, extra) => Object.assign({ id: "nm:" + id, kind: "nm", uuid: id, device: id, active: true,

@@ -9,11 +9,12 @@
 #   S  ok|fail|absent                                          full (peer stats)
 #   R  <ifname> <dns servers in use, space-separated>          full
 #   Q  <ifname> <dns domains in use, space-separated>          full
-#   G  <global-dns: yes|no> <tunnel-dns dispatcher: yes|no> <hook version>  full
+#   G  <global-dns: yes|no> <tunnel-dns dispatcher: yes|no|foreign> <hook version>  full
 #
 # Usage: wg-status [fast|full] [stats]
 
 set -u
+source -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/system-files.bash"
 mode=${1:-fast}
 want_stats=${2:-}
 tab=$'\t'
@@ -45,13 +46,19 @@ done
 # per-connection DNS; the dispatcher script puts tunnel DNS back.
 global=no
 grep -qs '^[[:space:]]*\[global-dns' /etc/NetworkManager/NetworkManager.conf /etc/NetworkManager/conf.d/*.conf && global=yes
+# "foreign": something else (an administrator's own script) is at the hook's
+# path; the plugin leaves it alone and stops offering to install or update.
 dispatcher=no hook_version=0
-hook=/etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns
-if [[ -x $hook ]]; then
-  dispatcher=yes hook_version=1
-  v=$(sed -n 's/^# hook-version: \([0-9]\{1,4\}\)$/\1/p' "$hook" 2>/dev/null | head -1)
-  [[ -n $v ]] && hook_version=$v
-fi
+hook=$WG_PLUGIN_HOOK
+case $(wg_plugin_file_state "$hook") in
+  ours)
+    if [[ -x $hook ]]; then
+      dispatcher=yes hook_version=1
+      v=$(sed -n 's/^# hook-version: \([0-9]\{1,4\}\)$/\1/p' "$hook" 2>/dev/null | head -1)
+      [[ -n $v ]] && hook_version=$v
+    fi ;;
+  foreign) dispatcher=foreign ;;
+esac
 printf 'G\t%s\t%s\t%s\n' "$global" "$dispatcher" "$hook_version"
 
 if command -v nmcli >/dev/null 2>&1; then
@@ -72,7 +79,7 @@ if command -v nmcli >/dev/null 2>&1; then
 fi
 
 if [[ $want_stats == stats ]]; then
-  helper=/usr/local/bin/omarchy-wg-dump
+  helper=$WG_PLUGIN_HELPER
   if [[ -x $helper ]]; then
     if out=$(sudo -n "$helper" 2>/dev/null); then
       [[ -n $out ]] && printf '%s\n' "$out" | sed "s/^/D${tab}/"

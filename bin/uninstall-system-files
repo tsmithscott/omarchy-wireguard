@@ -1,7 +1,9 @@
 #!/bin/bash
 # Removes everything the WireGuard plugin ever installed outside your home
-# directory. Run this BEFORE `omarchy plugin remove tsmithscott.wireguard`
-# (or any time), through pkexec:
+# directory, and nothing else: a file at one of those paths that the plugin
+# cannot verify it installed (see system-files.bash) is left in place.
+# Run this BEFORE `omarchy plugin remove tsmithscott.wireguard` (or any
+# time), through pkexec:
 #
 #   pkexec ~/.config/omarchy/plugins/tsmithscott.wireguard/bin/uninstall-system-files
 #
@@ -10,13 +12,8 @@
 
 set -euo pipefail
 export PATH=/usr/bin:/usr/sbin
+source -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/system-files.bash"
 
-for f in \
-  /etc/NetworkManager/dispatcher.d/90-omarchy-wireguard-dns \
-  /usr/local/bin/omarchy-wg-dump \
-  /etc/sudoers.d/omarchy-wg-dump; do
-  if [[ -e $f ]]; then
-    rm -f -- "$f"
-    echo "Removed $f"
-  fi
+for f in "$WG_PLUGIN_HOOK" "$WG_PLUGIN_HELPER" "$WG_PLUGIN_RULE"; do
+  wg_plugin_remove "$f"
 done
