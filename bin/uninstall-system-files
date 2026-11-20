@@ -14,6 +14,4 @@ set -euo pipefail
 export PATH=/usr/bin:/usr/sbin
 source -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/system-files.bash"
 
-for f in "$WG_PLUGIN_HOOK" "$WG_PLUGIN_HELPER" "$WG_PLUGIN_RULE"; do
-  wg_plugin_remove "$f"
-done
+wg_plugin_remove "$WG_PLUGIN_HOOK" "$WG_PLUGIN_HELPER" "$WG_PLUGIN_RULE"

@@ -23,8 +23,7 @@ rule=$WG_PLUGIN_RULE
 user=${1:?usage: setup-peer-stats <user> | --remove}
 
 if [[ $user == --remove ]]; then
-  wg_plugin_remove "$helper"
-  wg_plugin_remove "$rule"
+  wg_plugin_remove "$helper" "$rule"
   exit 0
 fi
 
@@ -34,8 +33,8 @@ id -- "$user" >/dev/null
 wg_plugin_may_write "$helper"
 wg_plugin_may_write "$rule"
 
-tmp=$(mktemp) sealed=$(mktemp)
-trap 'rm -f -- "$tmp" "$sealed"' EXIT
+tmp=$(mktemp) sealed=$(mktemp) sealed_rule=$(mktemp)
+trap 'rm -f -- "$tmp" "$sealed" "$sealed_rule"' EXIT
 
 cat >"$tmp" <<HELPER
 #!/bin/bash
@@ -45,14 +44,15 @@ $WG_PLUGIN_MARKER
 set -euo pipefail
 /usr/bin/wg show all dump | /usr/bin/awk 'BEGIN { FS = OFS = "\\t" } NF == 5 { \$2 = "(hidden)" } NF == 9 { \$3 = "(hidden)" } { print }'
 HELPER
-install -d -m 755 /usr/local/bin
 wg_plugin_seal "$tmp" "$sealed"
-install -o root -g root -m 755 "$sealed" "$helper"
-
 { printf '%s\n' "$WG_PLUGIN_MARKER"; wg_plugin_legacy_rule "$user"; } >"$tmp"
-wg_plugin_seal "$tmp" "$sealed"
-visudo -cqf "$sealed"
-install -o root -g root -m 440 "$sealed" "$rule"
+wg_plugin_seal "$tmp" "$sealed_rule"
+visudo -cqf "$sealed_rule"
+
+# Both files are ready and checked, so install them back to back.
+install -d -m 755 /usr/local/bin
+install -o root -g root -m 755 "$sealed" "$helper"
+install -o root -g root -m 440 "$sealed_rule" "$rule"
 
 echo "Installed $helper and $rule for $user"
 
