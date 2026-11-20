@@ -22,12 +22,15 @@ fi
 
 [[ -f $source ]] || { echo "No such file: $source" >&2; exit 2; }
 grep -qxF -- "$WG_PLUGIN_MARKER" "$source" || { echo "$source is not the plugin's dispatcher script" >&2; exit 2; }
-bash -n "$source"
 wg_plugin_may_write "$target"
+sealed=$(mktemp)
+trap 'rm -f -- "$sealed"' EXIT
+wg_plugin_seal "$source" "$sealed"
+bash -n "$sealed"
 # NetworkManager only runs dispatcher scripts that are root-owned and not
 # writable by anyone else; copying (not linking) keeps later edits to the
 # user-owned plugin from running as root.
-install -o root -g root -m 755 "$source" "$target"
+install -o root -g root -m 755 "$sealed" "$target"
 echo "Installed $target"
 
 # Apply to tunnels that are already up.

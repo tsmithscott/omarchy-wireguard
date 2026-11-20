@@ -34,8 +34,8 @@ id -- "$user" >/dev/null
 wg_plugin_may_write "$helper"
 wg_plugin_may_write "$rule"
 
-tmp=$(mktemp)
-trap 'rm -f -- "$tmp"' EXIT
+tmp=$(mktemp) sealed=$(mktemp)
+trap 'rm -f -- "$tmp" "$sealed"' EXIT
 
 cat >"$tmp" <<HELPER
 #!/bin/bash
@@ -46,11 +46,13 @@ set -euo pipefail
 /usr/bin/wg show all dump | /usr/bin/awk 'BEGIN { FS = OFS = "\\t" } NF == 5 { \$2 = "(hidden)" } NF == 9 { \$3 = "(hidden)" } { print }'
 HELPER
 install -d -m 755 /usr/local/bin
-install -o root -g root -m 755 "$tmp" "$helper"
+wg_plugin_seal "$tmp" "$sealed"
+install -o root -g root -m 755 "$sealed" "$helper"
 
 { printf '%s\n' "$WG_PLUGIN_MARKER"; wg_plugin_legacy_rule "$user"; } >"$tmp"
-visudo -cqf "$tmp"
-install -o root -g root -m 440 "$tmp" "$rule"
+wg_plugin_seal "$tmp" "$sealed"
+visudo -cqf "$sealed"
+install -o root -g root -m 440 "$sealed" "$rule"
 
 echo "Installed $helper and $rule for $user"
 

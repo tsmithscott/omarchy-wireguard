@@ -20,8 +20,27 @@ check() { # <expected> <path> <label>
 
 check absent "$t/nothing" "missing file is absent"
 
-cp -- "$plugin_bin/tunnel-dns-dispatcher" "$WG_PLUGIN_HOOK"
-check ours "$WG_PLUGIN_HOOK" "current dispatcher (marker) is ours"
+wg_plugin_seal "$plugin_bin/tunnel-dns-dispatcher" "$WG_PLUGIN_HOOK"
+check ours "$WG_PLUGIN_HOOK" "sealed dispatcher (as setup installs it) is ours"
+bash -n "$WG_PLUGIN_HOOK" && echo "ok   sealed dispatcher still parses" || { echo "FAIL sealed dispatcher does not parse"; fail=1; }
+sed -i 's/^# hook-version: .*/&\n# admin tweak/' "$WG_PLUGIN_HOOK"
+check foreign "$WG_PLUGIN_HOOK" "sealed dispatcher edited by an admin (marker kept) is foreign"
+wg_plugin_seal "$plugin_bin/tunnel-dns-dispatcher" "$WG_PLUGIN_HOOK"
+sed -i 's/\(sha256=\)[0-9a-f]/\1x/' "$WG_PLUGIN_HOOK"
+check foreign "$WG_PLUGIN_HOOK" "dispatcher with a damaged seal is foreign"
+wg_plugin_seal "$plugin_bin/tunnel-dns-dispatcher" "$WG_PLUGIN_HOOK"
+seal_line=$(grep -F "$WG_PLUGIN_MARKER sha256=" "$WG_PLUGIN_HOOK")
+echo "$seal_line" >>"$WG_PLUGIN_HOOK"
+check foreign "$WG_PLUGIN_HOOK" "dispatcher with two seal lines is foreign"
+printf '#!/bin/sh\necho admin\n%s\n' "$seal_line" >"$t/copied-seal"
+check foreign "$t/copied-seal" "admin file with a seal line copied from ours is foreign"
+
+git -C "$here/.." show 95a26f7:bin/tunnel-dns-dispatcher >"$WG_PLUGIN_HOOK"
+check ours "$WG_PLUGIN_HOOK" "1.5.1 dispatcher (bare marker, legacy hash) is ours"
+echo "# admin tweak" >>"$WG_PLUGIN_HOOK"
+check foreign "$WG_PLUGIN_HOOK" "1.5.1 dispatcher edited by an admin (marker kept) is foreign"
+printf '#!/bin/sh\n%s\necho admin\n' "$WG_PLUGIN_MARKER" >"$WG_PLUGIN_HOOK"
+check foreign "$WG_PLUGIN_HOOK" "admin file with a bare marker line is foreign"
 
 git -C "$here/.." show bf39a36:bin/tunnel-dns-dispatcher >"$WG_PLUGIN_HOOK"
 check ours "$WG_PLUGIN_HOOK" "1.2 dispatcher (legacy hash) is ours"
@@ -40,6 +59,15 @@ check foreign "$t/dir" "directory is foreign"
 
 git -C "$here/.." show bf39a36:bin/setup-peer-stats | sed -n '/<<.HELPER.$/,/^HELPER$/p' | sed '1d;$d' >"$WG_PLUGIN_HELPER"
 check ours "$WG_PLUGIN_HELPER" "1.x helper (legacy hash) is ours"
+# The helper setup-peer-stats writes, rendered the way 1.5.1 and now it does.
+render_helper() { { echo "WG_PLUGIN_MARKER='$WG_PLUGIN_MARKER'"; git -C "$here/.." show "$1":bin/setup-peer-stats 2>/dev/null || cat "$plugin_bin/setup-peer-stats"; } | sed -n '1p;/<<HELPER$/,/^HELPER$/p' | sed '2s/.*/cat <<HELPER/' | bash; }
+render_helper 95a26f7 >"$WG_PLUGIN_HELPER"
+check ours "$WG_PLUGIN_HELPER" "1.5.1 helper (bare marker, legacy hash) is ours"
+render_helper WORKTREE >"$t/plain-helper"
+wg_plugin_seal "$t/plain-helper" "$WG_PLUGIN_HELPER"
+check ours "$WG_PLUGIN_HELPER" "sealed helper is ours"
+sed -i 's/(hidden)/KEY/' "$WG_PLUGIN_HELPER"
+check foreign "$WG_PLUGIN_HELPER" "sealed helper edited by an admin is foreign"
 
 wg_plugin_legacy_rule alice >"$WG_PLUGIN_RULE"
 check ours "$WG_PLUGIN_RULE" "legacy sudoers rule is ours"
@@ -48,7 +76,15 @@ check foreign "$WG_PLUGIN_RULE" "legacy rule plus extra line is foreign"
 wg_plugin_legacy_rule alice >"$t/other-rule"
 check foreign "$t/other-rule" "legacy rule text at another path is foreign"
 { echo "$WG_PLUGIN_MARKER"; wg_plugin_legacy_rule alice; } >"$WG_PLUGIN_RULE"
-check ours "$WG_PLUGIN_RULE" "new sudoers rule (marker) is ours"
+check ours "$WG_PLUGIN_RULE" "1.5.1 sudoers rule (bare marker) is ours"
+{ echo "$WG_PLUGIN_MARKER"; wg_plugin_legacy_rule alice; echo 'alice ALL=(ALL) ALL'; } >"$WG_PLUGIN_RULE"
+check foreign "$WG_PLUGIN_RULE" "1.5.1 sudoers rule plus an admin line is foreign"
+{ echo "$WG_PLUGIN_MARKER"; wg_plugin_legacy_rule alice; } >"$t/plain-rule"
+wg_plugin_seal "$t/plain-rule" "$WG_PLUGIN_RULE"
+check ours "$WG_PLUGIN_RULE" "sealed sudoers rule is ours"
+echo 'alice ALL=(ALL) ALL' >>"$WG_PLUGIN_RULE"
+check foreign "$WG_PLUGIN_RULE" "sealed sudoers rule plus an admin line is foreign"
+wg_plugin_seal "$t/plain-rule" "$WG_PLUGIN_RULE"
 
 printf '#!/bin/sh\n# admin hook\n' >"$WG_PLUGIN_HOOK"
 wg_plugin_may_write "$WG_PLUGIN_HOOK" 2>/dev/null && { echo "FAIL may_write allowed a foreign file"; fail=1; } || echo "ok   may_write refuses foreign file"
