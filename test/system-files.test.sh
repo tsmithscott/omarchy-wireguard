@@ -69,45 +69,24 @@ check ours "$WG_PLUGIN_HELPER" "sealed helper is ours"
 sed -i 's/(hidden)/KEY/' "$WG_PLUGIN_HELPER"
 check foreign "$WG_PLUGIN_HELPER" "sealed helper edited by an admin is foreign"
 
-# Unsealed (pre-1.5.2) rules: the text alone is not enough, they must have
-# been written right after an unchanged pre-1.5.2 helper, as setup did.
-WG_PLUGIN_LEGACY_PAIR_SECONDS=0 # ctime is whole seconds; 'sleep 1' = later edit
-legacy_install() { # <rule-writer...>: helper then rule, like old setup-peer-stats
-  rm -f -- "$WG_PLUGIN_RULE"; render_helper 95a26f7 >"$WG_PLUGIN_HELPER"; "$@" >"$WG_PLUGIN_RULE"
-}
-legacy_install wg_plugin_legacy_rule alice
-check ours "$WG_PLUGIN_RULE" "legacy sudoers rule written with its helper is ours"
-sleep 1; wg_plugin_legacy_rule bob >"$WG_PLUGIN_RULE"
-check foreign "$WG_PLUGIN_RULE" "legacy rule moved to another account by an admin is foreign"
-legacy_install wg_plugin_legacy_rule alice
-sleep 1; chmod 400 "$WG_PLUGIN_RULE"
-check foreign "$WG_PLUGIN_RULE" "legacy rule touched (chmod) after install is foreign"
-legacy_install wg_plugin_legacy_rule alice
-sleep 1; render_helper 95a26f7 >"$WG_PLUGIN_HELPER"
-check foreign "$WG_PLUGIN_RULE" "legacy rule older than the helper is foreign"
-legacy_install wg_plugin_legacy_rule alice
-echo '# admin' >>"$WG_PLUGIN_HELPER"
-check foreign "$WG_PLUGIN_RULE" "legacy rule whose helper was edited is foreign"
-legacy_install wg_plugin_legacy_rule alice; rm -f -- "$WG_PLUGIN_HELPER"
-check foreign "$WG_PLUGIN_RULE" "legacy rule without its helper is foreign"
-legacy_install eval '{ wg_plugin_legacy_rule alice; echo "alice ALL=(ALL) ALL"; }'
-check foreign "$WG_PLUGIN_RULE" "legacy rule plus extra line is foreign"
-wg_plugin_legacy_rule alice >"$t/other-rule"
-check foreign "$t/other-rule" "legacy rule text at another path is foreign"
-legacy_install eval '{ echo "$WG_PLUGIN_MARKER"; wg_plugin_legacy_rule alice; }'
-check ours "$WG_PLUGIN_RULE" "1.5.1 sudoers rule (bare marker) written with its helper is ours"
-sleep 1; { echo "$WG_PLUGIN_MARKER"; wg_plugin_legacy_rule bob; } >"$WG_PLUGIN_RULE"
-check foreign "$WG_PLUGIN_RULE" "1.5.1 rule moved to another account by an admin is foreign"
-legacy_install eval '{ echo "$WG_PLUGIN_MARKER"; wg_plugin_legacy_rule alice; echo "alice ALL=(ALL) ALL"; }'
-check foreign "$WG_PLUGIN_RULE" "1.5.1 sudoers rule plus an admin line is foreign"
-legacy_install wg_plugin_legacy_rule alice
-wg_plugin_remove "$WG_PLUGIN_HELPER" "$WG_PLUGIN_RULE" >/dev/null
-[[ ! -e $WG_PLUGIN_HELPER && ! -e $WG_PLUGIN_RULE ]] && echo "ok   removing helper then legacy rule removes both" || { echo "FAIL legacy helper+rule removal left a file"; fail=1; }
-legacy_install wg_plugin_legacy_rule alice
-sleep 1; wg_plugin_legacy_rule bob >"$WG_PLUGIN_RULE"
-wg_plugin_remove "$WG_PLUGIN_HELPER" "$WG_PLUGIN_RULE" >/dev/null
-[[ ! -e $WG_PLUGIN_HELPER && -e $WG_PLUGIN_RULE ]] && echo "ok   removal keeps an admin-moved legacy rule" || { echo "FAIL removal of admin-moved legacy rule"; fail=1; }
-rm -f -- "$WG_PLUGIN_HELPER" # sealed rules need no helper
+# Unsealed (pre-1.5.2) rules name a user nobody can prove the plugin chose,
+# so they are never ours, however they got there (install, edit, restore).
+render_helper 95a26f7 >"$WG_PLUGIN_HELPER"; wg_plugin_legacy_rule alice >"$WG_PLUGIN_RULE"
+check foreign "$WG_PLUGIN_RULE" "legacy sudoers rule, even written with its helper, is foreign"
+wg_plugin_legacy_rule bob >"$WG_PLUGIN_RULE"
+check foreign "$WG_PLUGIN_RULE" "legacy rule reassigned to another account is foreign"
+render_helper 95a26f7 >"$WG_PLUGIN_HELPER"; wg_plugin_legacy_rule bob >"$WG_PLUGIN_RULE"
+check foreign "$WG_PLUGIN_RULE" "reassigned legacy rule restored together with its helper is foreign"
+{ echo "$WG_PLUGIN_MARKER"; wg_plugin_legacy_rule bob; } >"$WG_PLUGIN_RULE"
+check foreign "$WG_PLUGIN_RULE" "1.5.1 sudoers rule (bare marker) is foreign"
+wg_plugin_legacy_rule_note "$WG_PLUGIN_RULE" | grep -qF "sudo rm $WG_PLUGIN_RULE" && echo "ok   legacy rule gets a how-to-remove note" || { echo "FAIL no note for legacy rule"; fail=1; }
+wg_plugin_may_write "$WG_PLUGIN_RULE" 2>"$t/err" && { echo "FAIL may_write allowed a legacy rule"; fail=1; } || echo "ok   may_write refuses a legacy rule"
+grep -q "before 1.5.2" "$t/err" && echo "ok   setup refusal explains the legacy rule" || { echo "FAIL setup refusal lacks legacy note"; fail=1; }
+wg_plugin_remove "$WG_PLUGIN_HELPER" "$WG_PLUGIN_RULE" >"$t/out"
+[[ ! -e $WG_PLUGIN_HELPER && -e $WG_PLUGIN_RULE ]] && echo "ok   removal deletes the helper but keeps a legacy rule" || { echo "FAIL removal with legacy rule"; fail=1; }
+grep -q "sudo rm" "$t/out" && echo "ok   removal explains the kept legacy rule" || { echo "FAIL removal lacks legacy note"; fail=1; }
+printf '#!/bin/sh\n# admin hook\n' >"$t/hook-note"
+[[ -z $(wg_plugin_legacy_rule_note "$t/hook-note") ]] && echo "ok   no legacy note for other paths" || { echo "FAIL legacy note on another path"; fail=1; }
 { echo "$WG_PLUGIN_MARKER"; wg_plugin_legacy_rule alice; } >"$t/plain-rule"
 wg_plugin_seal "$t/plain-rule" "$WG_PLUGIN_RULE"
 check ours "$WG_PLUGIN_RULE" "sealed sudoers rule is ours"
