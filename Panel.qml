@@ -65,22 +65,64 @@ Panel {
   readonly property int settingsCursor: 1 + wg.tunnels.length + actionKeys.length
   readonly property int cursorCount: settingsCursor + 1 + settingsKeys.length
 
-  readonly property var settingsOrder: ["dnsServers", "dnsScope", "dnsDomains", "routeAll", "routes", "suggestRoutes",
-    "barLabel", "defaultTunnel", "dnsTunnel", "autoPublicIp", "showGraph", "exclusive", "notify", "offerPeerStats", "exclude", "wgQuick"]
+  // Settings has one collapsible section per tunnel, then "General".
+  // Cursor keys: "section@<tunnel id>" / "section@general" for the headers,
+  // "<setting>@<tunnel id>" for a tunnel's rows, plain names for General.
+  readonly property var tunnelSettingOrder: ["dnsServers", "dnsScope", "dnsDomains", "routeAll", "routes", "suggestRoutes"]
+  readonly property var generalOrder: ["barLabel", "defaultTunnel", "dnsTunnel", "autoPublicIp", "showGraph", "exclusive", "notify", "offerPeerStats", "exclude", "wgQuick"]
+
+  // Expanded sections: tunnel id or "general" -> true.
+  property var expanded: ({})
+  function isExpanded(id) { return expanded[id] === true }
+  function setExpanded(id, on) {
+    var m = Object.assign({}, expanded)
+    if (on) m[id] = true
+    else delete m[id]
+    expanded = m
+    // An opened section scrolls up so its options are in view.
+    if (on) Qt.callLater(function() { scrollToTop(settingItems["section@" + id]) })
+  }
+
+  function scrollToTop(item) {
+    var c = panel.loadedContent
+    if (!c || !c.flick || !item) return
+    var top = item.mapToItem(c.flick.contentItem, 0, 0).y - Style.space(6)
+    c.flick.contentY = Math.max(0, Math.min(top, c.flick.contentHeight - c.flick.height))
+  }
+
   // Visibility of each setting row; the keyboard order is built from it too.
   function showSetting(key) {
-    var t = selected
-    var nm = selectedNm
-    if (key === "dnsServers") return nm
-    if (key === "dnsScope") return nm && t.dns.length > 0
-    if (key === "dnsDomains") return nm && t.dns.length > 0 && (Model.dnsScope(t) === "domains" || domainsMode[t.id] === true)
-    if (key === "routeAll") return nm && Model.canRouteAll(t)
-    if (key === "routes") return nm && !Model.routesAll(t)
-    if (key === "suggestRoutes") return nm && !Model.routesAll(t) && Model.suggestedRoutes(t).length > 0
-    if (key === "dnsTunnel") return wg.dnsChoices.length > 0
-    return true
+    var at = key.indexOf("@")
+    if (at === -1) return key === "dnsTunnel" ? wg.dnsChoices.length > 0 : true
+    var name = key.substring(0, at)
+    if (name === "section") return true
+    var t = wg.tunnelById(key.substring(at + 1))
+    if (!t || t.kind !== "nm") return false
+    if (name === "dnsServers") return true
+    if (name === "dnsScope") return t.dns.length > 0
+    if (name === "dnsDomains") return t.dns.length > 0 && (Model.dnsScope(t) === "domains" || domainsMode[t.id] === true)
+    if (name === "routeAll") return Model.canRouteAll(t)
+    if (name === "routes") return !Model.routesAll(t)
+    if (name === "suggestRoutes") return !Model.routesAll(t) && Model.suggestedRoutes(t).length > 0
+    return false
   }
-  readonly property var settingsKeys: settingsOpen ? settingsOrder.filter(function(k) { return showSetting(k) }) : []
+
+  readonly property var settingsKeys: {
+    if (!settingsOpen) return []
+    var keys = []
+    for (var i = 0; i < wg.tunnels.length; i++) {
+      var id = wg.tunnels[i].id
+      keys.push("section@" + id)
+      if (!isExpanded(id)) continue
+      for (var j = 0; j < tunnelSettingOrder.length; j++) {
+        var k = tunnelSettingOrder[j] + "@" + id
+        if (showSetting(k)) keys.push(k)
+      }
+    }
+    keys.push("section@general")
+    if (isExpanded("general")) keys = keys.concat(generalOrder.filter(function(g) { return showSetting(g) }))
+    return keys
+  }
   // key -> setting item, filled in by the rows themselves (for activate/scroll).
   property var settingItems: ({})
 
@@ -99,9 +141,8 @@ Panel {
     domainsMode = m
   }
 
-  function chooseDnsScope() {
-    var t = selected
-    if (!selectedNm) return
+  function chooseDnsScope(t) {
+    if (!t || t.kind !== "nm") return
     if (Model.dnsScope(t) === "domains") {
       setDomainsMode(t.id, false)
       reportBad(wg.setDnsScope(t, "all", ""), "settings.badDomain")
@@ -110,9 +151,8 @@ Panel {
     }
   }
 
-  function commitDomains(text) {
-    var t = selected
-    if (!selectedNm) return
+  function commitDomains(t, text) {
+    if (!t || t.kind !== "nm") return
     var r = wg.setDnsScope(t, "domains", text)
     if (r.empty) {
       setDomainsMode(t.id, false)
@@ -121,9 +161,8 @@ Panel {
     reportBad(r, "settings.badDomain")
   }
 
-  function addSuggestedRoutes() {
-    var t = selected
-    if (!selectedNm) return
+  function addSuggestedRoutes(t) {
+    if (!t || t.kind !== "nm") return
     reportBad(wg.setRoutes(t, (t.routes || []).concat(Model.suggestedRoutes(t)).join(", ")), "settings.badRoute")
   }
 
@@ -132,13 +171,15 @@ Panel {
     Qt.callLater(function() { if (panel.loadedContent) panel.loadedContent.forceActiveFocus() })
   }
 
-  // "s": straight to Settings, keeping the selected tunnel (j/k over the
-  // tunnel list would select each tunnel on the way).
+  // "s": straight to the selected tunnel's section in Settings, opened.
   function jumpToSettings() {
+    var t = selected
+    settingsOpen = true
+    if (t) setExpanded(t.id, true)
     cursorActive = true
-    cursorIndex = settingsCursor
-    if (!settingsOpen) toggleSettings()
-    else scrollCursorIntoView()
+    var i = t ? settingsKeys.indexOf("section@" + t.id) : -1
+    cursorIndex = i === -1 ? settingsCursor : settingsCursor + 1 + i
+    if (i === -1) scrollCursorIntoView()
   }
 
   function fmtBytes(n) { return Model.formatBytes(n, Commons.I18n.formatNumber) }
@@ -896,87 +937,9 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            // ---- the selected tunnel's own options ----
-            PanelSectionHeader {
-              visible: root.selected !== null
-              text: root.selected ? strings.t("settings.tunnel").arg(root.selected.name) : ""
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
             Text {
               textFormat: Text.PlainText
-              visible: root.selected !== null && text !== ""
-              width: parent.width
-              text: root.selected && root.selected.kind !== "nm"
-                ? strings.t(root.selected.kind === "wgquick" ? "settings.tunnel.wgquick" : "settings.tunnel.external").arg(root.selected.name)
-                : (wg.tunnels.length > 1 ? strings.t("settings.tunnel.hint") : "")
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-            }
-
-            SettingText {
-              cursorKey: "dnsServers"
-              label: strings.t("settings.dnsServers")
-              hint: strings.t("settings.dnsServers.hint")
-              placeholder: "1.1.1.1, 2606:4700:4700::1111"
-              value: root.selectedNm ? root.selected.dns.join(", ") : ""
-              onCommitted: function(text) { root.reportBad(wg.setDnsServers(root.selected, text), "settings.badDns") }
-            }
-
-            SettingChoice {
-              cursorKey: "dnsScope"
-              readonly property bool domains: root.selectedNm && (Model.dnsScope(root.selected) === "domains" || root.domainsMode[root.selected.id] === true)
-              label: strings.t("settings.dnsScope")
-              hint: strings.t("settings.dnsScope.hint")
-              value: domains ? "domains" : "all"
-              display: strings.t("settings.dnsScope." + value)
-              onChosen: root.chooseDnsScope()
-            }
-
-            SettingText {
-              cursorKey: "dnsDomains"
-              label: strings.t("settings.dnsDomains")
-              hint: strings.t("settings.dnsDomains.hint")
-              placeholder: "home.lan"
-              value: root.selectedNm ? Model.routingDomains(root.selected).join(", ") : ""
-              onCommitted: function(text) { root.commitDomains(text) }
-            }
-
-            SettingToggle {
-              cursorKey: "routeAll"
-              label: strings.t("settings.routeAll")
-              hint: strings.t("settings.routeAll.hint")
-              checked: root.selectedNm && Model.routesAll(root.selected)
-              onFlipped: wg.setRouteAll(root.selected, !checked)
-            }
-
-            SettingText {
-              cursorKey: "routes"
-              label: strings.t("settings.routes")
-              hint: strings.t("settings.routes.hint")
-              placeholder: "192.168.1.0/24"
-              value: root.selectedNm ? root.selected.routes.join(", ") : ""
-              onCommitted: function(text) { root.reportBad(wg.setRoutes(root.selected, text), "settings.badRoute") }
-            }
-
-            SettingChoice {
-              cursorKey: "suggestRoutes"
-              readonly property var nets: root.selectedNm ? Model.suggestedRoutes(root.selected) : []
-              label: strings.t("settings.dnsUnrouted").arg(root.selectedNm ? Model.unroutedDns(root.selected).join(", ") : "")
-              labelColor: root.urgent
-              hint: strings.t("settings.dnsUnrouted.hint")
-              display: strings.t("settings.addRoute").arg(nets.join(", "))
-              icon: "󰐕"
-              buttonHint: strings.t("settings.addRoute.hint")
-              onChosen: root.addSuggestedRoutes()
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              visible: root.selectedNm && wg.lastError !== ""
+              visible: wg.lastError !== ""
               width: parent.width
               text: wg.lastError
               color: root.urgent
@@ -985,90 +948,107 @@ Panel {
               wrapMode: Text.WordWrap
             }
 
-            PanelSeparator {
-              visible: root.selected !== null
-              foreground: root.foreground
+            // ---- one section per tunnel ----
+            // The model is a count so a poll (new tunnel objects every
+            // second) doesn't rebuild the rows and drop a field being edited.
+            Repeater {
+              model: wg.tunnels.length
+              TunnelSettings {
+                required property int index
+                tunnel: index < wg.tunnels.length ? wg.tunnels[index] : null
+              }
             }
 
             // ---- options for the whole widget ----
-            SettingChoice {
-              cursorKey: "barLabel"
-              label: strings.t("settings.barLabel")
-              value: String(root.settings.barLabel || "Icon only")
-              display: strings.t("settings.barLabel." + value)
-              onChosen: root.setSetting("barLabel", root.cycle(["Icon only", "Tunnel name", "Speed"], value))
+            SectionHeader {
+              sectionId: "general"
+              title: strings.t("settings.general")
             }
 
-            SettingChoice {
-              cursorKey: "defaultTunnel"
-              label: strings.t("settings.defaultTunnel")
-              hint: strings.t("settings.defaultTunnel.hint")
-              value: String(root.settings.defaultTunnel || "")
-              display: value === "" ? strings.t("settings.lastUsed") : value
-              onChosen: root.setSetting("defaultTunnel", root.cycle(root.defaultTunnelOptions, value))
-            }
+            Column {
+              visible: root.isExpanded("general")
+              width: parent.width
+              spacing: Style.space(8)
 
-            SettingChoice {
-              cursorKey: "dnsTunnel"
-              label: strings.t("settings.dnsTunnel")
-              hint: strings.t("settings.dnsTunnel.hint")
-              value: wg.preferredDns ? wg.preferredDns.id : ""
-              display: wg.preferredDns ? wg.preferredDns.name : strings.t("settings.dnsTunnel.auto")
-              onChosen: root.chooseDnsTunnel()
-            }
+              SettingChoice {
+                cursorKey: "barLabel"
+                label: strings.t("settings.barLabel")
+                value: String(root.settings.barLabel || "Icon only")
+                display: strings.t("settings.barLabel." + value)
+                onChosen: root.setSetting("barLabel", root.cycle(["Icon only", "Tunnel name", "Speed"], value))
+              }
 
-            SettingToggle {
-              cursorKey: "autoPublicIp"
-              label: strings.t("settings.autoPublicIp")
-              hint: strings.t("settings.autoPublicIp.hint")
-              checked: root.settings.autoPublicIp !== false
-              onFlipped: root.setSetting("autoPublicIp", !checked)
-            }
+              SettingChoice {
+                cursorKey: "defaultTunnel"
+                label: strings.t("settings.defaultTunnel")
+                hint: strings.t("settings.defaultTunnel.hint")
+                value: String(root.settings.defaultTunnel || "")
+                display: value === "" ? strings.t("settings.lastUsed") : value
+                onChosen: root.setSetting("defaultTunnel", root.cycle(root.defaultTunnelOptions, value))
+              }
 
-            SettingToggle {
-              cursorKey: "showGraph"
-              label: strings.t("settings.showGraph")
-              checked: root.settings.showGraph !== false
-              onFlipped: root.setSetting("showGraph", !checked)
-            }
+              SettingChoice {
+                cursorKey: "dnsTunnel"
+                label: strings.t("settings.dnsTunnel")
+                hint: strings.t("settings.dnsTunnel.hint")
+                value: wg.preferredDns ? wg.preferredDns.id : ""
+                display: wg.preferredDns ? wg.preferredDns.name : strings.t("settings.dnsTunnel.auto")
+                onChosen: root.chooseDnsTunnel()
+              }
 
-            SettingToggle {
-              cursorKey: "exclusive"
-              label: strings.t("settings.exclusive")
-              hint: strings.t("settings.exclusive.hint")
-              checked: root.settings.exclusive === true
-              onFlipped: root.setSetting("exclusive", !checked)
-            }
+              SettingToggle {
+                cursorKey: "autoPublicIp"
+                label: strings.t("settings.autoPublicIp")
+                hint: strings.t("settings.autoPublicIp.hint")
+                checked: root.settings.autoPublicIp !== false
+                onFlipped: root.setSetting("autoPublicIp", !checked)
+              }
 
-            SettingToggle {
-              cursorKey: "notify"
-              label: strings.t("settings.notify")
-              checked: root.settings.notifyChanges === true
-              onFlipped: root.setSetting("notifyChanges", !checked)
-            }
+              SettingToggle {
+                cursorKey: "showGraph"
+                label: strings.t("settings.showGraph")
+                checked: root.settings.showGraph !== false
+                onFlipped: root.setSetting("showGraph", !checked)
+              }
 
-            SettingToggle {
-              cursorKey: "offerPeerStats"
-              label: strings.t("settings.offerPeerStats")
-              hint: strings.t("settings.offerPeerStats.hint")
-              checked: root.settings.offerPeerStats !== false
-              onFlipped: root.setSetting("offerPeerStats", !checked)
-            }
+              SettingToggle {
+                cursorKey: "exclusive"
+                label: strings.t("settings.exclusive")
+                hint: strings.t("settings.exclusive.hint")
+                checked: root.settings.exclusive === true
+                onFlipped: root.setSetting("exclusive", !checked)
+              }
 
-            SettingText {
-              cursorKey: "exclude"
-              label: strings.t("settings.exclude")
-              hint: strings.t("settings.exclude.hint")
-              value: String(root.settings.excludeInterfaces === undefined ? "wt0" : root.settings.excludeInterfaces)
-              onCommitted: function(text) { root.setSetting("excludeInterfaces", text) }
-            }
+              SettingToggle {
+                cursorKey: "notify"
+                label: strings.t("settings.notify")
+                checked: root.settings.notifyChanges === true
+                onFlipped: root.setSetting("notifyChanges", !checked)
+              }
 
-            SettingText {
-              cursorKey: "wgQuick"
-              label: strings.t("settings.wgQuick")
-              hint: strings.t("settings.wgQuick.hint")
-              value: String(root.settings.wgQuickConfigs || "")
-              onCommitted: function(text) { root.setSetting("wgQuickConfigs", text) }
+              SettingToggle {
+                cursorKey: "offerPeerStats"
+                label: strings.t("settings.offerPeerStats")
+                hint: strings.t("settings.offerPeerStats.hint")
+                checked: root.settings.offerPeerStats !== false
+                onFlipped: root.setSetting("offerPeerStats", !checked)
+              }
+
+              SettingText {
+                cursorKey: "exclude"
+                label: strings.t("settings.exclude")
+                hint: strings.t("settings.exclude.hint")
+                value: String(root.settings.excludeInterfaces === undefined ? "wt0" : root.settings.excludeInterfaces)
+                onCommitted: function(text) { root.setSetting("excludeInterfaces", text) }
+              }
+
+              SettingText {
+                cursorKey: "wgQuick"
+                label: strings.t("settings.wgQuick")
+                hint: strings.t("settings.wgQuick.hint")
+                value: String(root.settings.wgQuickConfigs || "")
+                onCommitted: function(text) { root.setSetting("wgQuickConfigs", text) }
+              }
             }
           }
         }
@@ -1343,7 +1323,9 @@ Panel {
     foreground: root.foreground
     hasCursor: cursorKey !== "" && root.settingHasCursor(cursorKey)
     implicitHeight: inner.implicitHeight + Style.space(8)
-    Component.onCompleted: if (cursorKey !== "") root.settingItems[cursorKey] = settingRow
+    function register() { if (cursorKey !== "") root.settingItems[cursorKey] = settingRow }
+    Component.onCompleted: register()
+    onCursorKeyChanged: register()
 
     Item {
       id: inner
@@ -1353,6 +1335,167 @@ Panel {
       anchors.leftMargin: Style.space(6)
       anchors.rightMargin: Style.space(6)
       implicitHeight: childrenRect.height
+    }
+  }
+
+  // A collapsible section header in Settings.
+  component SectionHeader: SettingRow {
+    id: sectionHeader
+    property string sectionId: ""
+    property string title: ""
+    property string subtitle: ""
+    cursorKey: "section@" + sectionId
+    function activate() { root.setExpanded(sectionId, !root.isExpanded(sectionId)) }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: sectionHeader.activate()
+    }
+
+    RowLayout {
+      width: parent.width
+      spacing: Style.space(8)
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+
+        Text {
+          textFormat: Text.PlainText
+          Layout.fillWidth: true
+          text: sectionHeader.title
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          wrapMode: Text.Wrap
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          Layout.fillWidth: true
+          visible: text !== ""
+          text: sectionHeader.subtitle
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.Wrap
+        }
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        text: root.isExpanded(sectionHeader.sectionId) ? "󰅀" : "󰅂"
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.icon
+        Layout.alignment: Qt.AlignVCenter
+      }
+    }
+  }
+
+  // One tunnel's own options, written to its NetworkManager profile.
+  component TunnelSettings: Column {
+    id: ts
+    property var tunnel: null
+    readonly property string sid: tunnel ? tunnel.id : ""
+    readonly property bool nm: tunnel !== null && tunnel.kind === "nm"
+    width: parent ? parent.width : 0
+    spacing: Style.space(8)
+
+    SectionHeader {
+      sectionId: ts.sid
+      title: ts.tunnel ? ts.tunnel.name : ""
+      subtitle: {
+        var t = ts.tunnel
+        if (!t) return ""
+        var parts = []
+        if (t.kind === "nm") {
+          parts.push(Model.routesAll(t) ? strings.t("routes.all") : strings.t("tunnel.split"))
+          if (t.dns.length > 0) parts.push(strings.t("settings.section.dns").arg(t.dns.join(", ")))
+        } else {
+          parts.push(root.kindLabel(t))
+        }
+        return parts.join(" · ")
+      }
+    }
+
+    Column {
+      visible: root.isExpanded(ts.sid)
+      width: parent.width
+      spacing: Style.space(8)
+
+      Text {
+        textFormat: Text.PlainText
+        visible: !ts.nm
+        width: parent.width
+        text: ts.tunnel && ts.tunnel.kind === "wgquick"
+          ? strings.t("settings.tunnel.wgquick").arg(ts.tunnel.name)
+          : strings.t("settings.tunnel.external").arg(ts.tunnel ? ts.tunnel.name : "")
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+      }
+
+      SettingText {
+        cursorKey: "dnsServers@" + ts.sid
+        label: strings.t("settings.dnsServers")
+        hint: strings.t("settings.dnsServers.hint")
+        placeholder: "1.1.1.1, 2606:4700:4700::1111"
+        value: ts.nm ? ts.tunnel.dns.join(", ") : ""
+        onCommitted: function(text) { root.reportBad(wg.setDnsServers(ts.tunnel, text), "settings.badDns") }
+      }
+
+      SettingChoice {
+        cursorKey: "dnsScope@" + ts.sid
+        readonly property bool domains: ts.nm && (Model.dnsScope(ts.tunnel) === "domains" || root.domainsMode[ts.sid] === true)
+        label: strings.t("settings.dnsScope")
+        hint: strings.t("settings.dnsScope.hint")
+        value: domains ? "domains" : "all"
+        display: strings.t("settings.dnsScope." + value)
+        onChosen: root.chooseDnsScope(ts.tunnel)
+      }
+
+      SettingText {
+        cursorKey: "dnsDomains@" + ts.sid
+        label: strings.t("settings.dnsDomains")
+        hint: strings.t("settings.dnsDomains.hint")
+        placeholder: "home.lan"
+        value: ts.nm ? Model.routingDomains(ts.tunnel).join(", ") : ""
+        onCommitted: function(text) { root.commitDomains(ts.tunnel, text) }
+      }
+
+      SettingToggle {
+        cursorKey: "routeAll@" + ts.sid
+        label: strings.t("settings.routeAll")
+        hint: strings.t("settings.routeAll.hint")
+        checked: ts.nm && Model.routesAll(ts.tunnel)
+        onFlipped: wg.setRouteAll(ts.tunnel, !checked)
+      }
+
+      SettingText {
+        cursorKey: "routes@" + ts.sid
+        label: strings.t("settings.routes")
+        hint: strings.t("settings.routes.hint")
+        placeholder: "192.168.1.0/24"
+        value: ts.nm ? ts.tunnel.routes.join(", ") : ""
+        onCommitted: function(text) { root.reportBad(wg.setRoutes(ts.tunnel, text), "settings.badRoute") }
+      }
+
+      SettingChoice {
+        cursorKey: "suggestRoutes@" + ts.sid
+        readonly property var nets: ts.nm ? Model.suggestedRoutes(ts.tunnel) : []
+        label: strings.t("settings.dnsUnrouted").arg(ts.nm ? Model.unroutedDns(ts.tunnel).join(", ") : "")
+        labelColor: root.urgent
+        hint: strings.t("settings.dnsUnrouted.hint")
+        display: strings.t("settings.addRoute").arg(nets.join(", "))
+        icon: "󰐕"
+        buttonHint: strings.t("settings.addRoute.hint")
+        onChosen: root.addSuggestedRoutes(ts.tunnel)
+      }
     }
   }
 

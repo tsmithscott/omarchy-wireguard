@@ -99,8 +99,6 @@
   "settings.wgQuick.hint": "Comma-separated names from /etc/wireguard, without .conf",
   "stat.routes": "Routes",
   "routes.all": "All traffic",
-  "settings.tunnel": "%1",
-  "settings.tunnel.hint": "These apply to the tunnel selected above. Click another tunnel to change it, or pick it with j/k and press s",
   "settings.tunnel.wgquick": "%1 is a wg-quick tunnel: change its DNS and routes in /etc/wireguard/%1.conf",
   "settings.tunnel.external": "%1 is managed by another program, so it can't be changed here",
   "settings.dnsServers": "DNS servers",
@@ -123,5 +121,7 @@
   "settings.dnsUnrouted.hint": "It's a private address and none of these routes cover it, so lookups go over your normal connection and time out",
   "settings.addRoute": "Add %1",
   "settings.addRoute.hint": "Route the DNS server's network through the tunnel (reconnects it)",
-  "tunnel.split": "split"
+  "tunnel.split": "split",
+  "settings.general": "General",
+  "settings.section.dns": "DNS %1"
 }
