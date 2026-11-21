@@ -61,6 +61,10 @@ case $(wg_plugin_file_state "$hook") in
 esac
 printf 'G\t%s\t%s\t%s\n' "$global" "$dispatcher" "$hook_version"
 
+nm_fields=wireguard.peers,wireguard.listen-port,ipv4.addresses,ipv6.addresses,ipv4.dns,ipv6.dns
+nm_fields+=,ipv4.dns-priority,ipv6.dns-priority,ipv4.dns-search,ipv6.dns-search
+nm_fields+=,ipv4.never-default,ipv6.never-default,ipv4.routes,ipv6.routes,ipv4.method,ipv6.method
+
 if command -v nmcli >/dev/null 2>&1; then
   while IFS= read -r line; do
     printf 'C\t%s\n' "$line"
@@ -71,10 +75,12 @@ if command -v nmcli >/dev/null 2>&1; then
     # Volatile (/run) profiles belong to whatever created the interface
     # (wg-quick, NetBird, ...); their config is not ours to read.
     [[ $line == *:/run/* ]] && continue
-    for field in wireguard.peers ipv4.addresses ipv6.addresses wireguard.listen-port ipv4.dns ipv6.dns ipv4.dns-priority ipv6.dns-priority ipv4.dns-search ipv6.dns-search ipv4.never-default ipv6.never-default ipv4.routes ipv6.routes ipv4.method ipv6.method; do
-      value=$(nmcli -g "$field" connection show uuid "$uuid" 2>/dev/null | tr '\n' ' ')
-      printf 'N\t%s\t%s\t%s\n' "$uuid" "$field" "${value% }"
-    done
+    # One nmcli call per profile: terse "field:value" lines, values escaped
+    # the same way `nmcli -g` escapes them.
+    while IFS= read -r prop; do
+      [[ $prop == *:* ]] || continue
+      printf 'N\t%s\t%s\t%s\n' "$uuid" "${prop%%:*}" "${prop#*:}"
+    done < <(nmcli -t -f "$nm_fields" connection show uuid "$uuid" 2>/dev/null)
   done < <(nmcli -t -f NAME,UUID,TYPE,DEVICE,STATE,FILENAME,AUTOCONNECT connection show 2>/dev/null | grep -E '^([^:]|\\:)*:[0-9a-fA-F-]{36}:wireguard:')
 fi
 

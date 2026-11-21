@@ -291,7 +291,7 @@ for (const file of fs.readdirSync(path.join(__dirname, "..")).filter(f => f.ends
   assert.deepStrictEqual(M.dnsCommands(mkt({ kind: "wgquick" }), "9.9.9.9").commands, [])
 
   assert.deepStrictEqual(M.routeAllCommands(mkt(), false), [
-    ["nmcli", "connection", "modify", "uuid", UUID, "ipv4.never-default", "yes", "ipv6.never-default", "yes"],
+    ["nmcli", "connection", "modify", "uuid", UUID, "ipv4.never-default", "yes", "ipv6.never-default", "yes", "ipv4.routes", "10.73.12.0/24", "ipv6.routes", ""],
     ["nmcli", "connection", "up", "uuid", UUID]])
   assert.deepStrictEqual(M.routeAllCommands(mkt(), true), [])
   assert.deepStrictEqual(M.routeAllCommands(mkt({ neverDefault: { v4: true, v6: true }, active: false }), true), [
@@ -315,6 +315,36 @@ for (const file of fs.readdirSync(path.join(__dirname, "..")).filter(f => f.ends
   assert.deepStrictEqual(tr.neverDefault, { v4: true, v6: false })
   assert.deepStrictEqual(tr.familyOff, { v4: true, v6: false })
   assert.deepStrictEqual(tr.routes, ["10.73.12.0/24", "192.168.1.0/24", "fd00:99::/64"])
+}
+
+// ---- suggested routes and DNS scope ----
+{
+  const mkt = (over) => Object.assign({ id: "nm:x", kind: "nm", uuid: UUID, device: "home", active: true, addresses: ["10.1.0.2/24"], dns: ["10.73.12.53"], dnsSearch: [], dnsPriority: 50, routes: [], routeSpecs: [], neverDefault: { v4: false, v6: false }, familyOff: { v4: false, v6: true }, peers: [{ allowedIps: ["0.0.0.0/0"] }] }, over || {})
+  assert.deepStrictEqual(M.suggestedRoutes(mkt()), ["10.73.12.0/24"])
+  assert.deepStrictEqual(M.suggestedRoutes(mkt({ dns: ["10.1.0.1"] })), [])
+  assert.deepStrictEqual(M.suggestedRoutes(mkt({ routes: ["10.73.12.0/24"] })), [])
+  // Turning routing off routes the DNS server's network, keeping old routes.
+  assert.deepStrictEqual(M.routeAllCommands(mkt({ routeSpecs: ["192.168.1.0/24 10.1.0.1 50"], routes: ["192.168.1.0/24"] }), false)[0],
+    ["nmcli", "connection", "modify", "uuid", UUID, "ipv4.never-default", "yes", "ipv6.never-default", "yes",
+     "ipv4.routes", "192.168.1.0/24 10.1.0.1 50, 10.73.12.0/24", "ipv6.routes", ""])
+  assert.strictEqual(M.routeAllCommands(mkt({ dns: [] }), false)[0].length, 9)
+
+  assert.deepStrictEqual(M.routingDomains(mkt({ dnsSearch: ["~", "~.", "~home.lan", "lan"] })), ["home.lan"])
+  assert.strictEqual(M.dnsScope(mkt({ dnsSearch: ["~"] })), "all")
+  assert.strictEqual(M.dnsScope(mkt({ dnsSearch: ["~home.lan"] })), "domains")
+  assert.deepStrictEqual(M.parseDomains("home.lan, ~corp.example .x.y. bad_domain -a.b"), { list: ["home.lan", "corp.example", "x.y"], bad: ["bad_domain", "-a.b"] })
+
+  const r = M.dnsScopeCommands(mkt({ dnsSearch: ["~", "lan"], dnsPriority: -50 }), "domains", "home.lan")
+  assert.deepStrictEqual(r.commands, [
+    ["nmcli", "connection", "modify", "uuid", UUID, "ipv4.dns-search", "~,lan,~home.lan", "ipv6.dns-search", "", "ipv4.dns-priority", "0", "ipv6.dns-priority", "0"],
+    ["nmcli", "device", "reapply", "home"]])
+  assert.strictEqual(M.dnsScopeCommands(mkt(), "domains", "").empty, true)
+  assert.deepStrictEqual(M.dnsScopeCommands(mkt(), "domains", "a_b").bad, ["a_b"])
+  assert.deepStrictEqual(M.dnsScopeCommands(mkt({ dnsSearch: ["~home.lan", "lan"] }), "all", "").commands[0].slice(5, 9), ["ipv4.dns-search", "lan", "ipv6.dns-search", ""])
+  assert.deepStrictEqual(M.dnsScopeCommands(mkt({ dnsSearch: ["lan"] }), "all", "").commands, [])
+  // An IPv6-only profile keeps its domains on ipv6.
+  assert.deepStrictEqual(M.dnsScopeCommands(mkt({ familyOff: { v4: true, v6: false }, active: false }), "domains", "home.lan").commands[0].slice(5),
+    ["ipv4.dns-search", "", "ipv6.dns-search", "~home.lan"])
 }
 
 console.log("model tests passed")

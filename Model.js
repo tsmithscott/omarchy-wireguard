@@ -599,11 +599,104 @@ function reconnectCommand(tunnel) {
   return tunnel && tunnel.active ? [["nmcli", "connection", "up", "uuid", tunnel.uuid]] : []
 }
 
+// Networks to route so the tunnel's own DNS servers stay reachable once it
+// stops routing everything: each unreachable server's /24 (IPv4) or /64
+// (IPv6), the usual size of the LAN a router's resolver sits on. WireGuard
+// has no route advertisement, so this is the one remote network the profile
+// itself names.
+function suggestedRoutes(tunnel) {
+  if (!tunnel || tunnel.kind !== "nm") return []
+  var split = Object.assign({}, tunnel, { neverDefault: { v4: true, v6: true } })
+  var off = tunnel.familyOff || {}
+  var out = []
+  var missing = unroutedDns(split)
+  for (var i = 0; i < missing.length; i++) {
+    var a = parseCidr(missing[i])
+    if (!a || off[a.family]) continue
+    var net = cidrText({ family: a.family, bits: a.bits, prefix: a.family === "v4" ? 24 : 64 })
+    if (out.indexOf(net) === -1) out.push(net)
+  }
+  return out
+}
+
+// Switching "Route all traffic" off also routes the networks above, so the
+// tunnel's DNS keeps working without typing anything.
 function routeAllCommands(tunnel, on) {
   if (!canRouteAll(tunnel) || routesAll(tunnel) === !!on) return []
   var nd = on ? "no" : "yes"
-  return [["nmcli", "connection", "modify", "uuid", tunnel.uuid, "ipv4.never-default", nd, "ipv6.never-default", nd]]
-    .concat(reconnectCommand(tunnel))
+  var modify = ["nmcli", "connection", "modify", "uuid", tunnel.uuid, "ipv4.never-default", nd, "ipv6.never-default", nd]
+  var extra = on ? [] : suggestedRoutes(tunnel)
+  if (extra.length > 0) {
+    var specs = { v4: [], v6: [] }
+    var existing = tunnel.routeSpecs || []
+    for (var i = 0; i < existing.length; i++) {
+      var c = parseCidr(String(existing[i]).trim().split(/\s+/)[0])
+      if (c) specs[c.family].push(String(existing[i]))
+    }
+    for (var j = 0; j < extra.length; j++) specs[parseCidr(extra[j]).family].push(extra[j])
+    modify = modify.concat(["ipv4.routes", specs.v4.join(", "), "ipv6.routes", specs.v6.join(", ")])
+  }
+  return [modify].concat(reconnectCommand(tunnel))
+}
+
+// ---- which lookups a tunnel's DNS answers --------------------------------
+
+// "~home.lan" entries in ipv4/ipv6.dns-search: the domains a split-DNS
+// tunnel answers. "~" and "~." aren't domains.
+function routingDomains(tunnel) {
+  return ((tunnel && tunnel.dnsSearch) || []).filter(function(d) {
+    d = String(d || "")
+    return d.charAt(0) === "~" && d !== "~" && d !== "~."
+  }).map(function(d) { return d.substring(1) })
+}
+
+// "all": every lookup while connected. "domains": only names under its
+// routing domains; everything else uses the normal DNS.
+function dnsScope(tunnel) {
+  return hasRoutingDomains(tunnel) ? "domains" : "all"
+}
+
+function parseDomains(text) {
+  var out = { list: [], bad: [] }
+  var items = splitInput(text)
+  for (var i = 0; i < items.length; i++) {
+    var d = items[i].replace(/^~/, "").replace(/^\./, "").replace(/\.$/, "").toLowerCase()
+    if (/^[a-z0-9]([a-z0-9-]{0,62})(\.[a-z0-9]([a-z0-9-]{0,62}))*$/.test(d) && d.length <= 253) {
+      if (out.list.indexOf(d) === -1) out.list.push(d)
+    } else {
+      out.bad.push(clip(items[i]))
+    }
+  }
+  return out
+}
+
+// nmcli commands for the DNS scope. "domains" with an empty list changes
+// nothing (empty: true): the panel keeps the domains field open until some
+// are typed. Plain search domains are kept either way. Going split also
+// drops a "use for all lookups" priority, which no longer applies.
+function dnsScopeCommands(tunnel, scope, domainsText) {
+  var none = { commands: [], bad: [], off: [], empty: false }
+  if (!tunnel || tunnel.kind !== "nm") return none
+  var keep = ((tunnel && tunnel.dnsSearch) || []).filter(function(d) {
+    d = String(d || "")
+    return d.charAt(0) !== "~" || d === "~" || d === "~."
+  })
+  var next = keep
+  if (scope === "domains") {
+    var parsed = parseDomains(domainsText)
+    if (parsed.bad.length > 0) return { commands: [], bad: parsed.bad, off: [], empty: false }
+    if (parsed.list.length === 0) return { commands: [], bad: [], off: [], empty: true }
+    next = keep.concat(parsed.list.map(function(d) { return "~" + d }))
+  }
+  if (sameList(next, tunnel.dnsSearch)) return none
+  var off = tunnel.familyOff || {}
+  var v4 = off.v4 ? "" : next.join(",")
+  var v6 = off.v4 && !off.v6 ? next.join(",") : ""
+  var modify = ["nmcli", "connection", "modify", "uuid", tunnel.uuid, "ipv4.dns-search", v4, "ipv6.dns-search", v6]
+  if (scope === "domains" && tunnel.dnsPriority < 0) modify = modify.concat(["ipv4.dns-priority", "0", "ipv6.dns-priority", "0"])
+  var cmds = [modify]
+  if (tunnel.active && isInterfaceName(tunnel.device)) cmds.push(["nmcli", "device", "reapply", tunnel.device])
+  return { commands: cmds, bad: [], off: [], empty: false }
 }
 
 // Keeps an existing route's next-hop and metric when its network is kept.
@@ -890,6 +983,11 @@ if (typeof module !== "undefined") {
     dnsCommands: dnsCommands,
     routeAllCommands: routeAllCommands,
     routesCommands: routesCommands,
+    suggestedRoutes: suggestedRoutes,
+    routingDomains: routingDomains,
+    dnsScope: dnsScope,
+    parseDomains: parseDomains,
+    dnsScopeCommands: dnsScopeCommands,
     routeConflicts: routeConflicts,
     removeCommand: removeCommand,
     canRemove: canRemove,

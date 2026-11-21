@@ -60,9 +60,86 @@ Panel {
     if (wg.statsState !== "ok" && settings.offerPeerStats !== false) keys.push("stats")
     return keys
   }
-  // Cursor order: master switch, tunnels, action buttons, Settings header.
+  // Cursor order: master switch, tunnels, action buttons, Settings header,
+  // then (while open) every visible setting.
   readonly property int settingsCursor: 1 + wg.tunnels.length + actionKeys.length
-  readonly property int cursorCount: settingsCursor + 1
+  readonly property int cursorCount: settingsCursor + 1 + settingsKeys.length
+
+  readonly property var settingsOrder: ["dnsServers", "dnsScope", "dnsDomains", "routeAll", "routes", "suggestRoutes",
+    "barLabel", "defaultTunnel", "dnsTunnel", "autoPublicIp", "showGraph", "exclusive", "notify", "offerPeerStats", "exclude", "wgQuick"]
+  // Visibility of each setting row; the keyboard order is built from it too.
+  function showSetting(key) {
+    var t = selected
+    var nm = selectedNm
+    if (key === "dnsServers") return nm
+    if (key === "dnsScope") return nm && t.dns.length > 0
+    if (key === "dnsDomains") return nm && t.dns.length > 0 && (Model.dnsScope(t) === "domains" || domainsMode[t.id] === true)
+    if (key === "routeAll") return nm && Model.canRouteAll(t)
+    if (key === "routes") return nm && !Model.routesAll(t)
+    if (key === "suggestRoutes") return nm && !Model.routesAll(t) && Model.suggestedRoutes(t).length > 0
+    if (key === "dnsTunnel") return wg.dnsChoices.length > 0
+    return true
+  }
+  readonly property var settingsKeys: settingsOpen ? settingsOrder.filter(function(k) { return showSetting(k) }) : []
+  // key -> setting item, filled in by the rows themselves (for activate/scroll).
+  property var settingItems: ({})
+
+  function settingHasCursor(key) {
+    var i = settingsKeys.indexOf(key)
+    return cursorActive && i !== -1 && cursorIndex === settingsCursor + 1 + i
+  }
+
+  // Tunnel ids whose DNS scope was switched to "only its domains" but have
+  // no domains saved yet (the profile can't record that on its own).
+  property var domainsMode: ({})
+  function setDomainsMode(id, on) {
+    var m = Object.assign({}, domainsMode)
+    if (on) m[id] = true
+    else delete m[id]
+    domainsMode = m
+  }
+
+  function chooseDnsScope() {
+    var t = selected
+    if (!selectedNm) return
+    if (Model.dnsScope(t) === "domains") {
+      setDomainsMode(t.id, false)
+      reportBad(wg.setDnsScope(t, "all", ""), "settings.badDomain")
+    } else {
+      setDomainsMode(t.id, domainsMode[t.id] !== true)
+    }
+  }
+
+  function commitDomains(text) {
+    var t = selected
+    if (!selectedNm) return
+    var r = wg.setDnsScope(t, "domains", text)
+    if (r.empty) {
+      setDomainsMode(t.id, false)
+      if (Model.dnsScope(t) === "domains") r = wg.setDnsScope(t, "all", "")
+    }
+    reportBad(r, "settings.badDomain")
+  }
+
+  function addSuggestedRoutes() {
+    var t = selected
+    if (!selectedNm) return
+    reportBad(wg.setRoutes(t, (t.routes || []).concat(Model.suggestedRoutes(t)).join(", ")), "settings.badRoute")
+  }
+
+  // Focus back to the panel after editing a text field.
+  function refocus() {
+    Qt.callLater(function() { if (panel.loadedContent) panel.loadedContent.forceActiveFocus() })
+  }
+
+  // "s": straight to Settings, keeping the selected tunnel (j/k over the
+  // tunnel list would select each tunnel on the way).
+  function jumpToSettings() {
+    cursorActive = true
+    cursorIndex = settingsCursor
+    if (!settingsOpen) toggleSettings()
+    else scrollCursorIntoView()
+  }
 
   function fmtBytes(n) { return Model.formatBytes(n, Commons.I18n.formatNumber) }
   function fmtRate(n) { return Model.formatRate(n, Commons.I18n.formatNumber) }
@@ -127,6 +204,7 @@ Panel {
       if (cursorIndex === 0) { flick.contentY = 0; return }
       if (ti < wg.tunnels.length) item = c.tunnelRepeater.itemAt(ti)
       else if (cursorIndex === settingsCursor) item = c.settingsRow
+      else if (cursorIndex > settingsCursor) item = root.settingItems[settingsKeys[cursorIndex - settingsCursor - 1]] || null
       else item = c.actionRepeater.itemAt(ti - wg.tunnels.length)
       if (!item) return
       var margin = Style.space(6)
@@ -143,6 +221,11 @@ Panel {
     var ti = cursorIndex - 1
     if (ti < wg.tunnels.length) { wg.toggleTunnel(wg.tunnels[ti]); return }
     if (cursorIndex === settingsCursor) { toggleSettings(); return }
+    if (cursorIndex > settingsCursor) {
+      var item = settingItems[settingsKeys[cursorIndex - settingsCursor - 1]]
+      if (item) item.activate()
+      return
+    }
     runAction(actionKeys[ti - wg.tunnels.length])
   }
 
@@ -212,6 +295,8 @@ Panel {
   readonly property bool selectedNm: selected !== null && selected.kind === "nm"
 
   // Shows which typed entries were rejected (nothing is changed then).
+  // Also shown inside Settings, next to the field (the top of the panel is
+  // usually scrolled away by then).
   function reportBad(result, key) {
     if (result.bad.length > 0) wg.lastError = strings.t(key).arg(result.bad.join(", "))
     else if (result.off.length > 0) wg.lastError = strings.t("settings.familyOff").arg(result.off.join(", "))
@@ -264,6 +349,12 @@ Panel {
     function status(): string { return wg.statusText }
     // Per-tunnel options, same as the Settings section (NetworkManager tunnels).
     function dns(name: string, servers: string): string { return root.ipcTunnelOption(name, function(t) { return wg.setDnsServers(t, servers) }) }
+    function dnsDomains(name: string, domains: string): string {
+      return root.ipcTunnelOption(name, function(t) {
+        var r = wg.setDnsScope(t, domains.trim() === "" ? "all" : "domains", domains)
+        return { bad: r.bad, off: r.off }
+      })
+    }
     function routes(name: string, networks: string): string { return root.ipcTunnelOption(name, function(t) { return wg.setRoutes(t, networks) }) }
     function routeAll(name: string, on: string): string {
       if (on !== "yes" && on !== "no") return "expected yes or no"
@@ -357,6 +448,7 @@ Panel {
         else if (t === "i" || t === "I") wg.importConfig()
         else if (t === "p" || t === "P") wg.checkPublicIp()
         else if (t === "r" || t === "R") wg.refresh(true)
+        else if (t === "s" || t === "S") root.jumpToSettings()
       }
 
       Flickable {
@@ -367,12 +459,11 @@ Panel {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { id: vbar; policy: ScrollBar.AsNeeded }
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         Column {
           id: column
-          // Leave room for the scrollbar so it never sits on top of the rows.
-          width: panelFlick.width - (panelFlick.interactive ? Math.max(vbar.width, vbar.implicitWidth) + Style.space(6) : 0)
+          width: panelFlick.width
           spacing: Style.space(12)
 
           // ---- hero + master switch ------------------------------------
@@ -824,7 +915,7 @@ Panel {
             }
 
             SettingText {
-              visible: root.selectedNm
+              cursorKey: "dnsServers"
               label: strings.t("settings.dnsServers")
               hint: strings.t("settings.dnsServers.hint")
               placeholder: "1.1.1.1, 2606:4700:4700::1111"
@@ -832,8 +923,27 @@ Panel {
               onCommitted: function(text) { root.reportBad(wg.setDnsServers(root.selected, text), "settings.badDns") }
             }
 
+            SettingChoice {
+              cursorKey: "dnsScope"
+              readonly property bool domains: root.selectedNm && (Model.dnsScope(root.selected) === "domains" || root.domainsMode[root.selected.id] === true)
+              label: strings.t("settings.dnsScope")
+              hint: strings.t("settings.dnsScope.hint")
+              value: domains ? "domains" : "all"
+              display: strings.t("settings.dnsScope." + value)
+              onChosen: root.chooseDnsScope()
+            }
+
+            SettingText {
+              cursorKey: "dnsDomains"
+              label: strings.t("settings.dnsDomains")
+              hint: strings.t("settings.dnsDomains.hint")
+              placeholder: "home.lan"
+              value: root.selectedNm ? Model.routingDomains(root.selected).join(", ") : ""
+              onCommitted: function(text) { root.commitDomains(text) }
+            }
+
             SettingToggle {
-              visible: root.selectedNm && Model.canRouteAll(root.selected)
+              cursorKey: "routeAll"
               label: strings.t("settings.routeAll")
               hint: strings.t("settings.routeAll.hint")
               checked: root.selectedNm && Model.routesAll(root.selected)
@@ -841,7 +951,7 @@ Panel {
             }
 
             SettingText {
-              visible: root.selectedNm && !Model.routesAll(root.selected)
+              cursorKey: "routes"
               label: strings.t("settings.routes")
               hint: strings.t("settings.routes.hint")
               placeholder: "192.168.1.0/24"
@@ -849,12 +959,23 @@ Panel {
               onCommitted: function(text) { root.reportBad(wg.setRoutes(root.selected, text), "settings.badRoute") }
             }
 
+            SettingChoice {
+              cursorKey: "suggestRoutes"
+              readonly property var nets: root.selectedNm ? Model.suggestedRoutes(root.selected) : []
+              label: strings.t("settings.dnsUnrouted").arg(root.selectedNm ? Model.unroutedDns(root.selected).join(", ") : "")
+              labelColor: root.urgent
+              hint: strings.t("settings.dnsUnrouted.hint")
+              display: strings.t("settings.addRoute").arg(nets.join(", "))
+              icon: "󰐕"
+              buttonHint: strings.t("settings.addRoute.hint")
+              onChosen: root.addSuggestedRoutes()
+            }
+
             Text {
               textFormat: Text.PlainText
-              readonly property var missing: root.selectedNm ? Model.unroutedDns(root.selected) : []
-              visible: missing.length > 0
+              visible: root.selectedNm && wg.lastError !== ""
               width: parent.width
-              text: strings.t("settings.dnsUnrouted").arg(missing.join(", "))
+              text: wg.lastError
               color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -868,6 +989,7 @@ Panel {
 
             // ---- options for the whole widget ----
             SettingChoice {
+              cursorKey: "barLabel"
               label: strings.t("settings.barLabel")
               value: String(root.settings.barLabel || "Icon only")
               display: strings.t("settings.barLabel." + value)
@@ -875,6 +997,7 @@ Panel {
             }
 
             SettingChoice {
+              cursorKey: "defaultTunnel"
               label: strings.t("settings.defaultTunnel")
               hint: strings.t("settings.defaultTunnel.hint")
               value: String(root.settings.defaultTunnel || "")
@@ -883,7 +1006,7 @@ Panel {
             }
 
             SettingChoice {
-              visible: wg.dnsChoices.length > 0
+              cursorKey: "dnsTunnel"
               label: strings.t("settings.dnsTunnel")
               hint: strings.t("settings.dnsTunnel.hint")
               value: wg.preferredDns ? wg.preferredDns.id : ""
@@ -892,6 +1015,7 @@ Panel {
             }
 
             SettingToggle {
+              cursorKey: "autoPublicIp"
               label: strings.t("settings.autoPublicIp")
               hint: strings.t("settings.autoPublicIp.hint")
               checked: root.settings.autoPublicIp !== false
@@ -899,12 +1023,14 @@ Panel {
             }
 
             SettingToggle {
+              cursorKey: "showGraph"
               label: strings.t("settings.showGraph")
               checked: root.settings.showGraph !== false
               onFlipped: root.setSetting("showGraph", !checked)
             }
 
             SettingToggle {
+              cursorKey: "exclusive"
               label: strings.t("settings.exclusive")
               hint: strings.t("settings.exclusive.hint")
               checked: root.settings.exclusive === true
@@ -912,12 +1038,14 @@ Panel {
             }
 
             SettingToggle {
+              cursorKey: "notify"
               label: strings.t("settings.notify")
               checked: root.settings.notifyChanges === true
               onFlipped: root.setSetting("notifyChanges", !checked)
             }
 
             SettingToggle {
+              cursorKey: "offerPeerStats"
               label: strings.t("settings.offerPeerStats")
               hint: strings.t("settings.offerPeerStats.hint")
               checked: root.settings.offerPeerStats !== false
@@ -925,6 +1053,7 @@ Panel {
             }
 
             SettingText {
+              cursorKey: "exclude"
               label: strings.t("settings.exclude")
               hint: strings.t("settings.exclude.hint")
               value: String(root.settings.excludeInterfaces === undefined ? "wt0" : root.settings.excludeInterfaces)
@@ -932,6 +1061,7 @@ Panel {
             }
 
             SettingText {
+              cursorKey: "wgQuick"
               label: strings.t("settings.wgQuick")
               hint: strings.t("settings.wgQuick.hint")
               value: String(root.settings.wgQuickConfigs || "")
@@ -1039,6 +1169,7 @@ Panel {
             if (root.kindLabel(t) !== "") parts.push(root.kindLabel(t))
             var addr = Model.firstAddress(t)
             if (addr !== "") parts.push(addr)
+            if (Model.canRouteAll(t) && !Model.routesAll(t)) parts.push(strings.t("tunnel.split"))
             if (row.on) {
               var r = wg.rateFor(t)
               parts.push("↓ " + root.fmtRate(r.rx) + "  ↑ " + root.fmtRate(r.tx))
@@ -1172,6 +1303,7 @@ Panel {
   component SettingLabel: ColumnLayout {
     property string label: ""
     property string hint: ""
+    property color labelColor: root.foreground
     Layout.fillWidth: true
     spacing: Style.space(1)
 
@@ -1179,7 +1311,7 @@ Panel {
       textFormat: Text.PlainText
       Layout.fillWidth: true
       text: parent.label
-      color: root.foreground
+      color: parent.labelColor
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall
       wrapMode: Text.WordWrap
@@ -1197,80 +1329,119 @@ Panel {
     }
   }
 
-  component SettingToggle: RowLayout {
+  // Setting rows: shown per root.showSetting(cursorKey), highlighted under
+  // the keyboard cursor, and activate() does what Enter on them should.
+  component SettingRow: CursorSurface {
+    id: settingRow
+    property string cursorKey: ""
+    default property alias content: inner.data
+    width: parent ? parent.width : 0
+    visible: cursorKey === "" || root.showSetting(cursorKey)
+    foreground: root.foreground
+    hasCursor: cursorKey !== "" && root.settingHasCursor(cursorKey)
+    implicitHeight: inner.implicitHeight + Style.space(8)
+    Component.onCompleted: if (cursorKey !== "") root.settingItems[cursorKey] = settingRow
+
+    Item {
+      id: inner
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(6)
+      anchors.rightMargin: Style.space(6)
+      implicitHeight: childrenRect.height
+    }
+  }
+
+  component SettingToggle: SettingRow {
     id: toggleRow
     property string label: ""
     property string hint: ""
     property bool checked: false
     signal flipped()
-    width: parent ? parent.width : 0
-    spacing: Style.space(10)
+    function activate() { flipped() }
 
-    SettingLabel { label: toggleRow.label; hint: toggleRow.hint }
+    RowLayout {
+      width: parent.width
+      spacing: Style.space(10)
 
-    ToggleSwitch {
-      checked: toggleRow.checked
-      cursorRing: false
-      foreground: root.foreground
-      Layout.alignment: Qt.AlignVCenter
-      onToggled: toggleRow.flipped()
+      SettingLabel { label: toggleRow.label; hint: toggleRow.hint }
+
+      ToggleSwitch {
+        checked: toggleRow.checked
+        cursorRing: false
+        foreground: root.foreground
+        Layout.alignment: Qt.AlignVCenter
+        onToggled: toggleRow.flipped()
+      }
     }
   }
 
-  component SettingChoice: RowLayout {
+  component SettingChoice: SettingRow {
     id: choiceRow
     property string label: ""
     property string hint: ""
+    property color labelColor: root.foreground
     property string value: ""
     property string display: value
+    property string icon: "󰑐"
+    property string buttonHint: strings.t("settings.cycle")
     signal chosen()
-    width: parent ? parent.width : 0
-    spacing: Style.space(10)
+    function activate() { chosen() }
 
-    SettingLabel { label: choiceRow.label; hint: choiceRow.hint }
+    RowLayout {
+      width: parent.width
+      spacing: Style.space(10)
 
-    Button {
-      text: choiceRow.display
-      iconText: "󰑐"
-      tooltipText: strings.t("settings.cycle")
-      bordered: true
-      foreground: root.foreground
-      fontFamily: root.fontFamily
-      fontSize: Style.font.bodySmall
-      Layout.alignment: Qt.AlignVCenter
-      onClicked: choiceRow.chosen()
+      SettingLabel { label: choiceRow.label; hint: choiceRow.hint; labelColor: choiceRow.labelColor }
+
+      Button {
+        text: choiceRow.display
+        iconText: choiceRow.icon
+        tooltipText: choiceRow.buttonHint
+        bordered: true
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: choiceRow.chosen()
+      }
     }
   }
 
-  component SettingText: ColumnLayout {
+  component SettingText: SettingRow {
     id: textRow
     property string label: ""
     property string hint: ""
     property string value: ""
     property string placeholder: ""
     signal committed(string text)
-    width: parent ? parent.width : 0
-    spacing: Style.space(4)
+    function activate() { field.forceActiveFocus(); field.selectAll() }
     // Follow the saved value (another tunnel selected, a refresh) unless the
     // field is being edited.
     onValueChanged: if (!field.activeFocus) field.text = value
 
-    SettingLabel { label: textRow.label; hint: textRow.hint }
+    ColumnLayout {
+      width: parent.width
+      spacing: Style.space(4)
 
-    TextField {
-      id: field
-      Layout.fillWidth: true
-      foreground: root.foreground
-      text: textRow.value
-      placeholderText: textRow.placeholder
-      // Save on Enter or when focus leaves, only if something changed.
-      function commit() {
-        var next = text.trim()
-        if (next !== textRow.value) textRow.committed(next)
+      SettingLabel { label: textRow.label; hint: textRow.hint }
+
+      TextField {
+        id: field
+        Layout.fillWidth: true
+        foreground: root.foreground
+        text: textRow.value
+        placeholderText: textRow.placeholder
+        // Save on Enter or when focus leaves, only if something changed.
+        function commit() {
+          var next = text.trim()
+          if (next !== textRow.value) textRow.committed(next)
+        }
+        onAccepted: { commit(); field.focus = false; root.refocus() }
+        onEditingFinished: commit()
+        Keys.onEscapePressed: { text = textRow.value; field.focus = false; root.refocus() }
       }
-      onAccepted: { commit(); field.focus = false }
-      onEditingFinished: commit()
-      Keys.onEscapePressed: { text = textRow.value; field.focus = false }
     }
   }
 

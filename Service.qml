@@ -437,6 +437,13 @@ Item {
     return r
   }
 
+  // "all" | "domains" (with the domains typed into the panel).
+  function setDnsScope(t, scope, text) {
+    var r = Model.dnsScopeCommands(t, scope, text)
+    for (var i = 0; i < r.commands.length; i++) enqueue(r.commands[i], "")
+    return r
+  }
+
   // "Route all traffic": off keeps only the tunnel's own networks (and the
   // extra routes) on it. Turning it back on for a connected tunnel can clash
   // with another full tunnel, which then goes down as in up().
