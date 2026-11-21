@@ -246,4 +246,75 @@ for (const file of fs.readdirSync(path.join(__dirname, "..")).filter(f => f.ends
   assert.deepStrictEqual(M.preferDnsCommands([mk("w", { kind: "wgquick" }), mk("x", { dns: [] })], null), [])
 }
 
+// ---- custom DNS servers and "Route all traffic" ----
+{
+  const mkt = (over) => Object.assign({ id: "nm:x", kind: "nm", uuid: UUID, device: "home", active: true, addresses: ["10.1.0.2/24"], dns: ["10.73.12.53"], routes: [], routeSpecs: [], neverDefault: { v4: false, v6: false }, peers: [{ allowedIps: ["0.0.0.0/0"] }] }, over || {})
+  // never-default switches the /0 route off, but not the /1 halves.
+  assert.deepStrictEqual(M.defaultRouteFamilies(mkt()), ["v4"])
+  assert.deepStrictEqual(M.defaultRouteFamilies(mkt({ neverDefault: { v4: true, v6: true } })), [])
+  assert.deepStrictEqual(M.defaultRouteFamilies(mkt({ neverDefault: { v4: true }, peers: [{ allowedIps: ["0.0.0.0/1", "128.0.0.0/1"] }] })), ["v4"])
+  assert.deepStrictEqual(M.defaultRouteFamilies(mkt({ neverDefault: { v4: true }, peers: [{ allowedIps: ["0.0.0.0/0", "0.0.0.0/1", "128.0.0.0/1"] }] })), ["v4"])
+  assert.strictEqual(M.canRouteAll(mkt()), true)
+  assert.strictEqual(M.canRouteAll(mkt({ peers: [{ allowedIps: ["10.0.0.0/8"] }] })), false)
+  assert.strictEqual(M.canRouteAll(mkt({ kind: "wgquick" })), false)
+  // A split tunnel no longer fights a full one for the default route.
+  const other = mkt({ id: "nm:y" })
+  assert.deepStrictEqual(M.routeConflicts(mkt({ neverDefault: { v4: true, v6: true } }), [other]), [])
+  assert.strictEqual(M.routeConflicts(mkt(), [other]).length, 1)
+
+  assert.deepStrictEqual(M.parseDnsServers("1.1.1.1, fd00::53 1.1.1.1;FD00::54"), { v4: ["1.1.1.1"], v6: ["fd00::53", "fd00::54"], bad: [] })
+  assert.deepStrictEqual(M.parseDnsServers("1.1.1.256 01.2.3.4 host.example ::1::2 $(x)").bad.length, 5)
+  assert.deepStrictEqual(M.parseDnsServers(""), { v4: [], v6: [], bad: [] })
+  assert.deepStrictEqual(M.parseRoutes("10.73.12.9/24 192.168.1.5 fd00:99::1/64"), { v4: ["10.73.12.0/24", "192.168.1.5/32"], v6: ["fd00:99::/64"], bad: [] })
+  assert.deepStrictEqual(M.parseRoutes("0.0.0.0/0 ::/0 10.0.0.0/33 x").bad, ["0.0.0.0/0", "::/0", "10.0.0.0/33", "x"])
+  assert.strictEqual(M.cidrText(M.parseCidr("2001:db8:0:0:1:0:0:1/128")), "2001:db8::1:0:0:1/128")
+
+  // DNS outside the tunnel's networks is flagged only once routing is split.
+  assert.deepStrictEqual(M.unroutedDns(mkt()), [])
+  assert.deepStrictEqual(M.unroutedDns(mkt({ neverDefault: { v4: true, v6: true } })), ["10.73.12.53"])
+  assert.deepStrictEqual(M.unroutedDns(mkt({ neverDefault: { v4: true, v6: true }, routes: ["10.73.12.0/24"] })), [])
+  assert.deepStrictEqual(M.unroutedDns(mkt({ neverDefault: { v4: true, v6: true }, dns: ["10.1.0.1"] })), [])
+
+  const d = M.dnsCommands(mkt(), "10.73.12.53, fd00::53")
+  assert.deepStrictEqual(d.commands, [
+    ["nmcli", "connection", "modify", "uuid", UUID, "ipv4.dns", "10.73.12.53", "ipv6.dns", "fd00::53"],
+    ["nmcli", "device", "reapply", "home"]])
+  assert.deepStrictEqual(M.dnsCommands(mkt(), "10.73.12.53").commands, [])
+  assert.deepStrictEqual(M.dnsCommands(mkt(), "").commands.slice(1), [["nmcli", "connection", "down", "uuid", UUID], ["nmcli", "connection", "up", "uuid", UUID]])
+  assert.deepStrictEqual(M.dnsCommands(mkt({ active: false }), "9.9.9.9").commands.length, 1)
+  assert.deepStrictEqual(M.dnsCommands(mkt(), "9.9.9.9 nope"), { commands: [], bad: ["nope"], off: [] })
+  // NetworkManager refuses DNS/routes for a family with method=disabled.
+  const v6only = mkt({ familyOff: { v4: true, v6: false } })
+  assert.deepStrictEqual(M.dnsCommands(v6only, "fd00::53, 1.1.1.1"), { commands: [], bad: [], off: ["1.1.1.1"] })
+  assert.strictEqual(M.dnsCommands(v6only, "fd00::53").commands[0][6], "")
+  assert.deepStrictEqual(M.routesCommands(v6only, "10.0.0.0/24").off, ["10.0.0.0/24"])
+  assert.deepStrictEqual(M.dnsCommands(mkt({ kind: "wgquick" }), "9.9.9.9").commands, [])
+
+  assert.deepStrictEqual(M.routeAllCommands(mkt(), false), [
+    ["nmcli", "connection", "modify", "uuid", UUID, "ipv4.never-default", "yes", "ipv6.never-default", "yes"],
+    ["nmcli", "connection", "up", "uuid", UUID]])
+  assert.deepStrictEqual(M.routeAllCommands(mkt(), true), [])
+  assert.deepStrictEqual(M.routeAllCommands(mkt({ neverDefault: { v4: true, v6: true }, active: false }), true), [
+    ["nmcli", "connection", "modify", "uuid", UUID, "ipv4.never-default", "no", "ipv6.never-default", "no"]])
+
+  // An existing route keeps its next-hop and metric.
+  const withRoute = mkt({ routes: ["192.168.1.0/24"], routeSpecs: ["192.168.1.0/24 10.1.0.1 50"] })
+  assert.deepStrictEqual(M.routesCommands(withRoute, "192.168.1.0/24, 10.73.12.0/24").commands[0],
+    ["nmcli", "connection", "modify", "uuid", UUID, "ipv4.routes", "192.168.1.0/24 10.1.0.1 50, 10.73.12.0/24", "ipv6.routes", ""])
+  assert.deepStrictEqual(M.routesCommands(withRoute, "192.168.1.0/24").commands, [])
+  assert.deepStrictEqual(M.routesCommands(withRoute, "0.0.0.0/0").bad, ["0.0.0.0/0"])
+
+  // wg-status fields reach the tunnel.
+  const tr = M.buildTunnels(M.parseSnapshot([
+    "C\tr:" + UUID + ":wireguard:::/etc/NetworkManager/system-connections/r.nmconnection:no",
+    "N\t" + UUID + "\tipv4.never-default\tyes",
+    "N\t" + UUID + "\tipv4.method\tdisabled",
+    "N\t" + UUID + "\tipv4.routes\t10.73.12.0/24, 192.168.1.0/24 10.0.0.1 50",
+    "N\t" + UUID + "\tipv6.routes\tfd00\\:99\\:\\:/64"
+  ].join("\n")), {})[0]
+  assert.deepStrictEqual(tr.neverDefault, { v4: true, v6: false })
+  assert.deepStrictEqual(tr.familyOff, { v4: true, v6: false })
+  assert.deepStrictEqual(tr.routes, ["10.73.12.0/24", "192.168.1.0/24", "fd00:99::/64"])
+}
+
 console.log("model tests passed")

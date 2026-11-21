@@ -21,12 +21,27 @@ Requirements: Omarchy with shell plugin support, NetworkManager (Omarchy's defau
 - **Bar:** VPN icon, slashed when nothing is up, with a `!` badge when a peer stops handshaking. Optional label showing the tunnel name or live ↓/↑ speed. The hover tooltip shows the active tunnels and their speeds.
   Left click opens the panel, right click runs the master toggle, middle click refreshes.
 - **Panel:** a master switch, plus for the selected tunnel: live receive/send rate, total received/sent, address, uptime, listen port, MTU, time since data was last received, and a 60-second throughput graph. Your public exit IP (with city and provider) is shown at the top and refreshes automatically. Every tunnel has its own switch, an autoconnect toggle, and a remove button (with confirmation; Delete key too). Removing a NetworkManager tunnel deletes its profile; removing a wg-quick entry just hides it, since `/etc/wireguard` is root-owned. Peers show their endpoint and allowed IPs, plus handshake age and per-peer traffic when peer stats are on. The panel also has "Import config" (a file chooser, then `nmcli connection import`).
-- **Settings:** a collapsible Settings section at the bottom of the panel covers bar label, default tunnel, automatic public IP, graph, one-tunnel-at-a-time, notifications, peer-stats button, hidden interfaces, and wg-quick configs. Omarchy has no settings screen for plugins, so they live in the panel. They're saved to this widget's entry in `~/.config/omarchy/shell.json`, so `omarchy bar set tsmithscott.wireguard <key> <value>` works too.
+- **Per-tunnel options:** set a NetworkManager tunnel's DNS servers, turn off "Route all traffic" so only its own networks go through it, and add extra routes. See [DNS servers and routing](#dns-servers-and-routing).
+- **Settings:** a collapsible Settings section at the bottom of the panel covers the selected tunnel's options, then bar label, default tunnel, automatic public IP, graph, one-tunnel-at-a-time, notifications, peer-stats button, hidden interfaces, and wg-quick configs. Omarchy has no settings screen for plugins, so they live in the panel. They're saved to this widget's entry in `~/.config/omarchy/shell.json`, so `omarchy bar set tsmithscott.wireguard <key> <value>` works too.
 - **Keys:** j/k or arrows move (the panel scrolls to follow), Enter toggles the tunnel or runs the button under the cursor (including opening Settings), Delete removes, Esc closes, `t` master toggle, `c` copy address, `i` import, `p` public IP, `r` refresh.
+
+## DNS servers and routing
+
+![The Settings section for the "home" tunnel: DNS servers, Route all traffic switched off, and an extra route to 192.168.1.0/24](docs/settings.png)
+
+The top of **Settings** holds options for the tunnel selected in the list (click a tunnel to pick it). They're written to its NetworkManager profile, so they also apply when you connect with `nmcli`.
+
+- **DNS servers:** comma-separated IPv4 and IPv6 addresses (`ipv4.dns` / `ipv6.dns`), saved on Enter. A connected tunnel picks them up straight away. Leave it empty to use your system DNS; that reconnects the tunnel so the old servers are cleared. With `omarchy dns` set, the [tunnel DNS hook](#tunnel-dns) is what applies them.
+- **Route all traffic:** shown when a peer's AllowedIPs include `0.0.0.0/0` or `::/0`. Switch it off and the tunnel only carries its own subnet, the peers' other AllowedIPs, and the extra routes below. Everything else uses your normal connection. Stored as `ipv4.never-default` / `ipv6.never-default`. A tunnel with this off is no longer a full tunnel, so it doesn't replace another full tunnel when it connects. WireGuard has no route advertisement: the networks are whatever AllowedIPs and these routes say.
+- **Extra routes:** networks to send through the tunnel when it isn't routing everything, such as the LAN behind your home router (`192.168.1.0/24`). Written to `ipv4.routes` / `ipv6.routes`. A route you already had keeps its next hop and metric.
+
+If the tunnel's DNS server is outside every network it routes, the panel says so: lookups would go out over your normal connection and usually time out. Add a route that covers the server.
+
+Changing routing on a connected tunnel reconnects it (about a second). `nmcli device reapply` would avoid that, but it can crash NetworkManager when a WireGuard default route is switched back on. wg-quick and unmanaged tunnels aren't editable here; change their own config.
 
 ## Multiple tunnels
 
-Split tunnels (peers that only route specific networks) run side by side. A full tunnel, one that routes all traffic (`0.0.0.0/0` or `::/0`, or the `/1` halves), can't share the default route with another full tunnel. So bringing one up disconnects any other full tunnel for the same address family, and a notification says which one went down. Turn on "One tunnel at a time" in Settings to have every connect disconnect all the others.
+Split tunnels (peers that only route specific networks, or tunnels with Route all traffic off) run side by side. A full tunnel, one that routes all traffic (`0.0.0.0/0` or `::/0`, or the `/1` halves), can't share the default route with another full tunnel. So bringing one up disconnects any other full tunnel for the same address family, and a notification says which one went down. Turn on "One tunnel at a time" in Settings to have every connect disconnect all the others.
 
 ## Tunnel sources
 
@@ -54,6 +69,9 @@ If either path already holds a file the plugin didn't install, setup stops witho
 
 ```
 omarchy-shell tsmithscott.wireguard status | toggleAll | up <name> | down <name> | refresh | open
+omarchy-shell tsmithscott.wireguard dns <name> "<servers>"        # "" for system DNS
+omarchy-shell tsmithscott.wireguard routeAll <name> yes|no
+omarchy-shell tsmithscott.wireguard routes <name> "<networks>"
 ```
 
 ## Network access

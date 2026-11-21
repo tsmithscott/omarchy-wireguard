@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "tsmithscott.wireguard",
   "name": "WireGuard",
-  "version": "1.5.4",
+  "version": "1.6.0",
   "author": "tsmithscott",
   "license": "MIT",
-  "description": "WireGuard tunnel status, live speed and traffic stats, peer handshakes, and one-click toggles in the Omarchy bar.",
+  "description": "WireGuard tunnel status, live speed and traffic stats, peer handshakes, one-click toggles, and per-tunnel DNS servers and split routing in the Omarchy bar.",
   "kinds": [
     "bar-widget"
   ],

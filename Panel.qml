@@ -209,11 +209,27 @@ Panel {
     return names
   }
 
+  readonly property bool selectedNm: selected !== null && selected.kind === "nm"
+
+  // Shows which typed entries were rejected (nothing is changed then).
+  function reportBad(result, key) {
+    if (result.bad.length > 0) wg.lastError = strings.t(key).arg(result.bad.join(", "))
+    else if (result.off.length > 0) wg.lastError = strings.t("settings.familyOff").arg(result.off.join(", "))
+    else if (wg.lastError !== "" && wg.actionStatus === "") wg.lastError = ""
+  }
+
   function runAction(key) {
     if (key === "import") wg.importConfig()
     else if (key === "publicIp") wg.checkPublicIp()
     else if (key === "stats") wg.enablePeerStats()
     else if (key === "dnsFix" || key === "dnsUpdate") wg.installDnsFix()
+  }
+
+  // Bottom edge of the Settings row inside the panel's content.
+  readonly property real settingsBottom: {
+    var c = panel.loadedContent
+    if (!c || !c.settingsRow) return 0
+    return c.settingsRow.y + c.settingsRow.height + panel.verticalContentInset + Style.space(2)
   }
 
   implicitWidth: button.implicitWidth
@@ -246,6 +262,27 @@ Panel {
     function down(name: string): string { return wg.downByName(name) }
     function refresh(): string { wg.refresh(true); return "ok" }
     function status(): string { return wg.statusText }
+    // Per-tunnel options, same as the Settings section (NetworkManager tunnels).
+    function dns(name: string, servers: string): string { return root.ipcTunnelOption(name, function(t) { return wg.setDnsServers(t, servers) }) }
+    function routes(name: string, networks: string): string { return root.ipcTunnelOption(name, function(t) { return wg.setRoutes(t, networks) }) }
+    function routeAll(name: string, on: string): string {
+      if (on !== "yes" && on !== "no") return "expected yes or no"
+      return root.ipcTunnelOption(name, function(t) {
+        if (!Model.canRouteAll(t)) return { bad: ["no peer allows 0.0.0.0/0 or ::/0"], off: [] }
+        wg.setRouteAll(t, on === "yes")
+        return { bad: [], off: [] }
+      })
+    }
+  }
+
+  function ipcTunnelOption(name, apply) {
+    var t = wg.tunnelByName(name)
+    if (!t) return "unknown tunnel"
+    if (t.kind !== "nm") return "not a NetworkManager tunnel"
+    var r = apply(t)
+    if (r.bad.length > 0) return "invalid: " + r.bad.join(", ")
+    if (r.off.length > 0) return "address family disabled on this profile: " + r.off.join(", ")
+    return "ok"
   }
 
   TextMetrics {
@@ -293,7 +330,9 @@ Panel {
     open: root.opened
     focusTarget: panel.loadedContent
     contentWidth: panel.fittedContentWidth(Style.space(400))
-    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(640))
+    // Tall enough to show everything down to the Settings row (screen
+    // permitting); only the opened settings scroll.
+    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Math.max(Style.space(640), root.settingsBottom))
 
     content: PanelKeyCatcher {
       id: keyCatcher
@@ -328,11 +367,12 @@ Panel {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        ScrollBar.vertical: ScrollBar { id: vbar; policy: ScrollBar.AsNeeded }
 
         Column {
           id: column
-          width: panelFlick.width
+          // Leave room for the scrollbar so it never sits on top of the rows.
+          width: panelFlick.width - (panelFlick.interactive ? Math.max(vbar.width, vbar.implicitWidth) + Style.space(6) : 0)
           spacing: Style.space(12)
 
           // ---- hero + master switch ------------------------------------
@@ -511,6 +551,29 @@ Panel {
                   return strings.t(role === "all" ? "dns.allLookups" : "dns.ownDomains").arg(t.dns.join(", "))
                 }
                 color: dnsStatus === "missing" ? root.urgent : root.foreground
+              }
+
+              InfoLabel { text: strings.t("stat.routes") }
+              DetailValue {
+                Layout.columnSpan: 3
+                text: {
+                  var t = root.selected
+                  if (!t) return "--"
+                  if (Model.routesAll(t)) return strings.t("routes.all")
+                  var nets = (t.addresses || []).map(function(a) {
+                    var c = Model.parseCidr(a)
+                    return c ? Model.cidrText(c) : a
+                  }).concat(t.routes || [])
+                  var peers = t.peers || []
+                  for (var i = 0; i < peers.length; i++) {
+                    var allowed = peers[i].allowedIps || []
+                    for (var j = 0; j < allowed.length; j++) {
+                      var c2 = Model.parseCidr(allowed[j])
+                      if (c2 && c2.prefix > 0 && nets.indexOf(Model.cidrText(c2)) === -1) nets.push(Model.cidrText(c2))
+                    }
+                  }
+                  return nets.length > 0 ? nets.join(", ") : "--"
+                }
               }
 
               InfoLabel { text: strings.t("stat.lastRx") }
@@ -739,6 +802,71 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
+            // ---- the selected tunnel's own options ----
+            PanelSectionHeader {
+              visible: root.selected !== null
+              text: root.selected ? strings.t("settings.tunnel").arg(root.selected.name) : ""
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              visible: root.selected !== null && text !== ""
+              width: parent.width
+              text: root.selected && root.selected.kind !== "nm"
+                ? strings.t(root.selected.kind === "wgquick" ? "settings.tunnel.wgquick" : "settings.tunnel.external").arg(root.selected.name)
+                : (wg.tunnels.length > 1 ? strings.t("settings.tunnel.hint") : "")
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            SettingText {
+              visible: root.selectedNm
+              label: strings.t("settings.dnsServers")
+              hint: strings.t("settings.dnsServers.hint")
+              placeholder: "1.1.1.1, 2606:4700:4700::1111"
+              value: root.selectedNm ? root.selected.dns.join(", ") : ""
+              onCommitted: function(text) { root.reportBad(wg.setDnsServers(root.selected, text), "settings.badDns") }
+            }
+
+            SettingToggle {
+              visible: root.selectedNm && Model.canRouteAll(root.selected)
+              label: strings.t("settings.routeAll")
+              hint: strings.t("settings.routeAll.hint")
+              checked: root.selectedNm && Model.routesAll(root.selected)
+              onFlipped: wg.setRouteAll(root.selected, !checked)
+            }
+
+            SettingText {
+              visible: root.selectedNm && !Model.routesAll(root.selected)
+              label: strings.t("settings.routes")
+              hint: strings.t("settings.routes.hint")
+              placeholder: "192.168.1.0/24"
+              value: root.selectedNm ? root.selected.routes.join(", ") : ""
+              onCommitted: function(text) { root.reportBad(wg.setRoutes(root.selected, text), "settings.badRoute") }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              readonly property var missing: root.selectedNm ? Model.unroutedDns(root.selected) : []
+              visible: missing.length > 0
+              width: parent.width
+              text: strings.t("settings.dnsUnrouted").arg(missing.join(", "))
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            PanelSeparator {
+              visible: root.selected !== null
+              foreground: root.foreground
+            }
+
+            // ---- options for the whole widget ----
             SettingChoice {
               label: strings.t("settings.barLabel")
               value: String(root.settings.barLabel || "Icon only")
@@ -1119,9 +1247,13 @@ Panel {
     property string label: ""
     property string hint: ""
     property string value: ""
+    property string placeholder: ""
     signal committed(string text)
     width: parent ? parent.width : 0
     spacing: Style.space(4)
+    // Follow the saved value (another tunnel selected, a refresh) unless the
+    // field is being edited.
+    onValueChanged: if (!field.activeFocus) field.text = value
 
     SettingLabel { label: textRow.label; hint: textRow.hint }
 
@@ -1130,6 +1262,7 @@ Panel {
       Layout.fillWidth: true
       foreground: root.foreground
       text: textRow.value
+      placeholderText: textRow.placeholder
       // Save on Enter or when focus leaves, only if something changed.
       function commit() {
         var next = text.trim()

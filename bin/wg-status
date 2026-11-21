@@ -71,7 +71,7 @@ if command -v nmcli >/dev/null 2>&1; then
     # Volatile (/run) profiles belong to whatever created the interface
     # (wg-quick, NetBird, ...); their config is not ours to read.
     [[ $line == *:/run/* ]] && continue
-    for field in wireguard.peers ipv4.addresses ipv6.addresses wireguard.listen-port ipv4.dns ipv6.dns ipv4.dns-priority ipv6.dns-priority ipv4.dns-search ipv6.dns-search; do
+    for field in wireguard.peers ipv4.addresses ipv6.addresses wireguard.listen-port ipv4.dns ipv6.dns ipv4.dns-priority ipv6.dns-priority ipv4.dns-search ipv6.dns-search ipv4.never-default ipv6.never-default ipv4.routes ipv6.routes ipv4.method ipv6.method; do
       value=$(nmcli -g "$field" connection show uuid "$uuid" 2>/dev/null | tr '\n' ' ')
       printf 'N\t%s\t%s\t%s\n' "$uuid" "$field" "${value% }"
     done

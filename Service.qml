@@ -237,9 +237,10 @@ Item {
     }
     _rxSeen = seen
 
-    // The exit address changes when tunnels come or go; re-check once the
-    // routes have settled.
-    var key = Object.keys(nowActive).sort().join(",")
+    // The exit address changes when tunnels come or go, or one stops routing
+    // everything; re-check once the routes have settled.
+    var key = built.filter(function(b) { return nowActive[b.id] })
+      .map(function(b) { return b.id + (Model.routesAll(b) ? "*" : "") }).sort().join(",")
     if (key !== _publicIpKey) {
       var first = _publicIpKey === "" && _publicIpAt === 0
       _publicIpKey = key
@@ -417,6 +418,41 @@ Item {
   // answer wins). Stored as NetworkManager's own ipv4/ipv6.dns-priority.
   function setPreferredDns(t) {
     var cmds = Model.preferDnsCommands(tunnels, t)
+    for (var i = 0; i < cmds.length; i++) enqueue(cmds[i], "")
+  }
+
+  // Per-tunnel options from the panel. Each returns { bad, off }: entries it
+  // couldn't parse, and ones for an address family the profile has switched
+  // off. Nothing is changed when either is non-empty.
+  function setDnsServers(t, text) {
+    var r = Model.dnsCommands(t, text)
+    for (var i = 0; i < r.commands.length; i++) enqueue(r.commands[i], "")
+    return r
+  }
+
+  function setRoutes(t, text) {
+    var r = Model.routesCommands(t, text)
+    if (r.commands.length > 0 && isActive(t)) setPending(t, true)
+    for (var i = 0; i < r.commands.length; i++) enqueue(r.commands[i], "")
+    return r
+  }
+
+  // "Route all traffic": off keeps only the tunnel's own networks (and the
+  // extra routes) on it. Turning it back on for a connected tunnel can clash
+  // with another full tunnel, which then goes down as in up().
+  function setRouteAll(t, on) {
+    var cmds = Model.routeAllCommands(t, on)
+    if (cmds.length === 0) return
+    if (on && isActive(t) && !exclusive) {
+      var full = Object.assign({}, t, { neverDefault: { v4: false, v6: false } })
+      var clash = Model.routeConflicts(full, activeTunnels)
+      var replaced = []
+      for (var j = 0; j < clash.length; j++) {
+        if (Model.canToggle(clash[j])) { down(clash[j]); replaced.push(clash[j].name) }
+      }
+      if (replaced.length > 0) notifyReplaced(t, replaced)
+    }
+    if (isActive(t)) setPending(t, true)
     for (var i = 0; i < cmds.length; i++) enqueue(cmds[i], "")
   }
 

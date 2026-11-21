@@ -239,6 +239,11 @@ function buildTunnels(snap, options) {
       dnsDomainsInUse: activated && c.device && snap.domains[c.device] ? snap.domains[c.device] : [],
       dnsPriority: dnsPriority(nm["ipv4.dns-priority"], nm["ipv6.dns-priority"]),
       dnsSearch: nmList(nm["ipv4.dns-search"]).concat(nmList(nm["ipv6.dns-search"])),
+      neverDefault: { v4: nm["ipv4.never-default"] === "yes", v6: nm["ipv6.never-default"] === "yes" },
+      // An address family NetworkManager has switched off takes no DNS or routes.
+      familyOff: { v4: nm["ipv4.method"] === "disabled", v6: nm["ipv6.method"] === "disabled" || nm["ipv6.method"] === "ignore" },
+      routeSpecs: nmList(nm["ipv4.routes"]).concat(nmList(nm["ipv6.routes"])),
+      routes: routePrefixes(nmList(nm["ipv4.routes"]).concat(nmList(nm["ipv6.routes"]))),
       listenPort: live && live.listenPort ? live.listenPort : toNumber(nm["wireguard.listen-port"]),
       publicKey: live ? live.publicKey || "" : "",
       mtu: iface ? iface.mtu : 0,
@@ -270,6 +275,10 @@ function buildTunnels(snap, options) {
       dnsDomainsInUse: snap.domains[name] || [],
       dnsPriority: 0,
       dnsSearch: [],
+      neverDefault: { v4: false, v6: false },
+      familyOff: { v4: false, v6: false },
+      routeSpecs: [],
+      routes: [],
       listenPort: dumped ? dumped.listenPort || 0 : 0,
       publicKey: dumped ? dumped.publicKey || "" : "",
       mtu: ifc.mtu,
@@ -285,7 +294,7 @@ function buildTunnels(snap, options) {
     if (!isInterfaceName(cfg) || claimed[cfg] || contains(exclude, cfg)) continue
     tunnels.push({
       id: "if:" + cfg, kind: "wgquick", name: cfg, uuid: "", device: "", state: "", active: false, busy: false,
-      autoconnect: false, addresses: [], dns: [], dnsInUse: [], dnsDomainsInUse: [], dnsPriority: 0, dnsSearch: [], listenPort: 0, publicKey: "", mtu: 0, rx: 0, tx: 0, peers: []
+      autoconnect: false, addresses: [], dns: [], dnsInUse: [], dnsDomainsInUse: [], dnsPriority: 0, dnsSearch: [], neverDefault: { v4: false, v6: false }, familyOff: { v4: false, v6: false }, routeSpecs: [], routes: [], listenPort: 0, publicKey: "", mtu: 0, rx: 0, tx: 0, peers: []
     })
   }
 
@@ -384,6 +393,238 @@ function preferDnsCommands(tunnels, chosen) {
   }
   for (var r = 0; r < reapply.length; r++) cmds.push(["nmcli", "device", "reapply", reapply[r]])
   return cmds
+}
+
+// ---- addresses, DNS servers and routes typed into the panel ----------
+
+function parseIPv4(text) {
+  var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(text || ""))
+  if (!m) return null
+  var out = []
+  for (var i = 1; i <= 4; i++) {
+    if (m[i].length > 1 && m[i].charAt(0) === "0") return null
+    var n = parseInt(m[i], 10)
+    if (n > 255) return null
+    out.push(n)
+  }
+  return out
+}
+
+// Eight 16-bit groups, or null. Embedded dotted IPv4 is not accepted.
+function parseIPv6(text) {
+  var s = String(text || "").toLowerCase()
+  if (!/^[0-9a-f:]{2,39}$/.test(s)) return null
+  var halves = s.split("::")
+  if (halves.length > 2) return null
+  function groups(part) {
+    if (part === "") return []
+    var g = part.split(":")
+    var out = []
+    for (var i = 0; i < g.length; i++) {
+      if (!/^[0-9a-f]{1,4}$/.test(g[i])) return null
+      out.push(parseInt(g[i], 16))
+    }
+    return out
+  }
+  var head = groups(halves[0])
+  if (!head) return null
+  if (halves.length === 1) return head.length === 8 ? head : null
+  var tail = groups(halves[1])
+  if (!tail) return null
+  var fill = 8 - head.length - tail.length
+  if (fill < 1) return null
+  var zeros = []
+  for (var z = 0; z < fill; z++) zeros.push(0)
+  return head.concat(zeros, tail)
+}
+
+// { family, bits: [0/1 x 32|128], prefix } for "addr" or "addr/prefix".
+function parseCidr(text) {
+  var s = String(text || "").trim()
+  var slash = s.indexOf("/")
+  var addr = slash === -1 ? s : s.substring(0, slash)
+  var v4 = parseIPv4(addr)
+  var v6 = v4 ? null : parseIPv6(addr)
+  if (!v4 && !v6) return null
+  var width = v4 ? 8 : 16
+  var max = v4 ? 32 : 128
+  var prefix = max
+  if (slash !== -1) {
+    var p = s.substring(slash + 1)
+    if (!/^\d{1,3}$/.test(p)) return null
+    prefix = parseInt(p, 10)
+    if (prefix > max) return null
+  }
+  var bits = []
+  var parts = v4 || v6
+  for (var i = 0; i < parts.length; i++) for (var b = width - 1; b >= 0; b--) bits.push((parts[i] >> b) & 1)
+  return { family: v4 ? "v4" : "v6", bits: bits, prefix: prefix }
+}
+
+function cidrContains(net, addr) {
+  if (!net || !addr || net.family !== addr.family) return false
+  for (var i = 0; i < net.prefix; i++) if (net.bits[i] !== addr.bits[i]) return false
+  return true
+}
+
+// The network a CIDR names, written back out: "10.73.12.9/24" -> "10.73.12.0/24".
+function cidrText(c) {
+  var bits = c.bits.slice()
+  for (var i = c.prefix; i < bits.length; i++) bits[i] = 0
+  var width = c.family === "v4" ? 8 : 16
+  var parts = []
+  for (var g = 0; g < bits.length; g += width) {
+    var n = 0
+    for (var b = 0; b < width; b++) n = n * 2 + bits[g + b]
+    parts.push(c.family === "v4" ? String(n) : n.toString(16))
+  }
+  var addr = c.family === "v4" ? parts.join(".") : compressIPv6(parts)
+  return addr + "/" + c.prefix
+}
+
+function compressIPv6(parts) {
+  var best = -1, bestLen = 0
+  for (var i = 0; i < parts.length; i++) {
+    var j = i
+    while (j < parts.length && parts[j] === "0") j++
+    if (j - i > bestLen && j - i > 1) { best = i; bestLen = j - i }
+    if (j > i) i = j - 1
+  }
+  if (best === -1) return parts.join(":")
+  return parts.slice(0, best).join(":") + "::" + parts.slice(best + bestLen).join(":")
+}
+
+function splitInput(text) {
+  return String(text || "").split(/[\s,;]+/).filter(function(p) { return p !== "" }).slice(0, 64)
+}
+
+// "1.1.1.1, fd00::53" -> { v4: [...], v6: [...], bad: [...] }
+function parseDnsServers(text) {
+  var out = { v4: [], v6: [], bad: [] }
+  var items = splitInput(text)
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i]
+    if (parseIPv4(item)) { if (out.v4.indexOf(item) === -1) out.v4.push(item) }
+    else if (parseIPv6(item)) { var v = item.toLowerCase(); if (out.v6.indexOf(v) === -1) out.v6.push(v) }
+    else out.bad.push(clip(item))
+  }
+  return out
+}
+
+// "10.73.12.0/24 192.168.1.5" -> networks for ipv4.routes / ipv6.routes. A
+// default route (/0) is refused: that is what "Route all traffic" is for.
+function parseRoutes(text) {
+  var out = { v4: [], v6: [], bad: [] }
+  var items = splitInput(text)
+  for (var i = 0; i < items.length; i++) {
+    var c = parseCidr(items[i])
+    if (!c || c.prefix === 0) { out.bad.push(clip(items[i])); continue }
+    var t = cidrText(c)
+    var list = c.family === "v4" ? out.v4 : out.v6
+    if (list.indexOf(t) === -1) list.push(t)
+  }
+  return out
+}
+
+// nmcli -g ipv4.routes entries are "net/prefix [next-hop] [metric] [attr=..]".
+function routePrefixes(specs) {
+  return (specs || []).map(function(r) { return String(r).trim().split(/\s+/)[0] }).filter(function(r) { return r !== "" })
+}
+
+// Networks that go through the tunnel when it isn't routing everything: its
+// own subnet(s), the extra routes, and peers' non-default allowed IPs.
+function tunnelNetworks(tunnel) {
+  if (!tunnel) return []
+  var list = (tunnel.addresses || []).concat(tunnel.routes || [])
+  var peers = tunnel.peers || []
+  for (var i = 0; i < peers.length; i++) list = list.concat(peers[i].allowedIps || [])
+  var out = []
+  for (var j = 0; j < list.length; j++) {
+    var c = parseCidr(list[j])
+    if (c && c.prefix > 0) out.push(c)
+  }
+  return out
+}
+
+// DNS servers a tunnel names that its routes don't reach. With "Route all
+// traffic" off, a resolver outside the tunnel's networks is asked over the
+// normal internet connection instead (and usually just times out).
+function unroutedDns(tunnel) {
+  if (!tunnel || !tunnel.dns || tunnel.dns.length === 0) return []
+  var full = defaultRouteFamilies(tunnel)
+  var nets = tunnelNetworks(tunnel)
+  return tunnel.dns.filter(function(server) {
+    var a = parseCidr(server)
+    if (!a) return false
+    if (full.indexOf(a.family) !== -1) return false
+    for (var i = 0; i < nets.length; i++) if (cidrContains(nets[i], a)) return false
+    return true
+  })
+}
+
+function sameList(a, b) {
+  return (a || []).join(",") === (b || []).join(",")
+}
+
+// Entries for an address family the profile has switched off (ipv4.method
+// disabled): NetworkManager refuses DNS servers and routes for it.
+function familyOffEntries(tunnel, parsed) {
+  var off = (tunnel && tunnel.familyOff) || {}
+  return (off.v4 ? parsed.v4 : []).concat(off.v6 ? parsed.v6 : [])
+}
+
+// nmcli commands that set a profile's DNS servers. An active tunnel is
+// reapplied so they take effect now. Clearing them takes the tunnel down and
+// up again: with system DNS overriding NetworkManager, nothing else removes
+// the old servers from the link (the DNS hook skips tunnels without DNS, and
+// an in-place `connection up` keeps the same link).
+function dnsCommands(tunnel, text) {
+  var parsed = parseDnsServers(text)
+  if (!tunnel || tunnel.kind !== "nm" || parsed.bad.length > 0) return { commands: [], bad: parsed.bad, off: [] }
+  var off = familyOffEntries(tunnel, parsed)
+  if (off.length > 0) return { commands: [], bad: [], off: off }
+  var next = parsed.v4.concat(parsed.v6)
+  if (sameList(next, tunnel.dns)) return { commands: [], bad: [], off: [] }
+  var cmds = [["nmcli", "connection", "modify", "uuid", tunnel.uuid, "ipv4.dns", parsed.v4.join(","), "ipv6.dns", parsed.v6.join(",")]]
+  if (tunnel.active && isInterfaceName(tunnel.device)) {
+    if (next.length === 0) cmds.push(["nmcli", "connection", "down", "uuid", tunnel.uuid], ["nmcli", "connection", "up", "uuid", tunnel.uuid])
+    else cmds.push(["nmcli", "device", "reapply", tunnel.device])
+  }
+  return { commands: cmds, bad: [], off: [] }
+}
+
+// Routing changes reconnect an active tunnel: `nmcli device reapply` can
+// crash NetworkManager when the WireGuard default route comes back.
+function reconnectCommand(tunnel) {
+  return tunnel && tunnel.active ? [["nmcli", "connection", "up", "uuid", tunnel.uuid]] : []
+}
+
+function routeAllCommands(tunnel, on) {
+  if (!canRouteAll(tunnel) || routesAll(tunnel) === !!on) return []
+  var nd = on ? "no" : "yes"
+  return [["nmcli", "connection", "modify", "uuid", tunnel.uuid, "ipv4.never-default", nd, "ipv6.never-default", nd]]
+    .concat(reconnectCommand(tunnel))
+}
+
+// Keeps an existing route's next-hop and metric when its network is kept.
+function routesCommands(tunnel, text) {
+  var parsed = parseRoutes(text)
+  if (!tunnel || tunnel.kind !== "nm" || parsed.bad.length > 0) return { commands: [], bad: parsed.bad, off: [] }
+  var off = familyOffEntries(tunnel, parsed)
+  if (off.length > 0) return { commands: [], bad: [], off: off }
+  if (sameList(parsed.v4.concat(parsed.v6), (tunnel.routes || []).map(function(r) { var c = parseCidr(r); return c ? cidrText(c) : r }))) return { commands: [], bad: [], off: [] }
+  var specs = {}
+  for (var i = 0; i < (tunnel.routeSpecs || []).length; i++) {
+    var spec = String(tunnel.routeSpecs[i])
+    var c = parseCidr(spec.trim().split(/\s+/)[0])
+    if (c) specs[cidrText(c)] = spec
+  }
+  function full(list) { return list.map(function(n) { return specs[n] || n }).join(", ") }
+  return {
+    commands: [["nmcli", "connection", "modify", "uuid", tunnel.uuid, "ipv4.routes", full(parsed.v4), "ipv6.routes", full(parsed.v6)]].concat(reconnectCommand(tunnel)),
+    bad: [],
+    off: []
+  }
 }
 
 function isInterfaceName(name) {
@@ -510,19 +751,46 @@ function tunnelHealth(tunnel, nowSec, rxQuietSec) {
   return "ok"
 }
 
-// Which address families a tunnel takes the default route for: "v4" and/or
-// "v6". Counts 0.0.0.0/0 and ::/0, plus the 0.0.0.0/1 + 128.0.0.0/1 (and
-// ::/1 + 8000::/1) split some configs use to outrank the normal default route.
-function defaultRouteFamilies(tunnel) {
+// Address families a tunnel's peers claim the whole of: "v4" and/or "v6".
+// Counts 0.0.0.0/0 and ::/0, plus the 0.0.0.0/1 + 128.0.0.0/1 (and ::/1 +
+// 8000::/1) split some configs use to outrank the normal default route.
+// `zeroOnly`: true counts just the /0 form (the one never-default switches
+// off), "halves" just the /1 pair.
+function peerDefaultFamilies(tunnel, zeroOnly) {
   var all = []
   var peers = tunnel && tunnel.peers ? tunnel.peers : []
   for (var i = 0; i < peers.length; i++) all = all.concat(peers[i].allowedIps || [])
   var nets = all.map(function(a) { return String(a).trim().toLowerCase() })
   var has = function(n) { return nets.indexOf(n) !== -1 }
+  var zero = { v4: has("0.0.0.0/0"), v6: has("::/0") }
+  var halves = { v4: has("0.0.0.0/1") && has("128.0.0.0/1"), v6: has("::/1") && has("8000::/1") }
   var fams = []
-  if (has("0.0.0.0/0") || (has("0.0.0.0/1") && has("128.0.0.0/1"))) fams.push("v4")
-  if (has("::/0") || (has("::/1") && has("8000::/1"))) fams.push("v6")
+  var families = ["v4", "v6"]
+  for (var f = 0; f < families.length; f++) {
+    var fam = families[f]
+    if (zeroOnly === "halves" ? halves[fam] : (zero[fam] || (!zeroOnly && halves[fam]))) fams.push(fam)
+  }
   return fams
+}
+
+// Which address families a tunnel actually takes the default route for.
+// NetworkManager skips a peer's /0 route when ipv4/ipv6.never-default is set
+// (the "Route all traffic" switch); the /1 halves are ordinary routes and
+// still apply.
+function defaultRouteFamilies(tunnel) {
+  var nd = (tunnel && tunnel.neverDefault) || {}
+  var halves = peerDefaultFamilies(tunnel, "halves")
+  return peerDefaultFamilies(tunnel, false).filter(function(f) { return !nd[f] || halves.indexOf(f) !== -1 })
+}
+
+// Whether the "Route all traffic" switch means anything for this tunnel: a
+// NetworkManager profile whose peer allows 0.0.0.0/0 or ::/0.
+function canRouteAll(tunnel) {
+  return !!tunnel && tunnel.kind === "nm" && peerDefaultFamilies(tunnel, true).length > 0
+}
+
+function routesAll(tunnel) {
+  return defaultRouteFamilies(tunnel).length > 0
 }
 
 // Active tunnels that would fight `target` for the default route: they claim
@@ -611,6 +879,17 @@ if (typeof module !== "undefined") {
     peerHealth: peerHealth,
     tunnelHealth: tunnelHealth,
     defaultRouteFamilies: defaultRouteFamilies,
+    peerDefaultFamilies: peerDefaultFamilies,
+    canRouteAll: canRouteAll,
+    routesAll: routesAll,
+    parseCidr: parseCidr,
+    cidrText: cidrText,
+    parseDnsServers: parseDnsServers,
+    parseRoutes: parseRoutes,
+    unroutedDns: unroutedDns,
+    dnsCommands: dnsCommands,
+    routeAllCommands: routeAllCommands,
+    routesCommands: routesCommands,
     routeConflicts: routeConflicts,
     removeCommand: removeCommand,
     canRemove: canRemove,
