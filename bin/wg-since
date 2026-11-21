@@ -1,0 +1,17 @@
+#!/bin/bash
+# When NetworkManager last activated each given device this boot, from its
+# journal ("device (<dev>): Activation: successful"). Read-only, no root
+# (needs read access to the system journal, as wheel/systemd-journal have).
+# Prints "<device>\t<epoch seconds>" for each one found.
+#
+# Usage: wg-since <device>...
+
+set -u
+for dev in "$@"; do
+  [[ $dev =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]] || continue
+  pattern="device \\(${dev//./\\.}\\): Activation: successful"
+  line=$(journalctl -b -u NetworkManager.service --no-pager -q -o short-unix -n 1 -g "$pattern" 2>/dev/null | tail -1)
+  at=${line%% *}
+  [[ $at =~ ^[0-9]{9,11}(\.[0-9]+)?$ ]] && printf '%s\t%s\n' "$dev" "$at"
+done
+exit 0

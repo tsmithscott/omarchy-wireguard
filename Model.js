@@ -546,16 +546,28 @@ function tunnelNetworks(tunnel) {
   return out
 }
 
-// DNS servers a tunnel names that its routes don't reach. With "Route all
-// traffic" off, a resolver outside the tunnel's networks is asked over the
-// normal internet connection instead (and usually just times out).
+// Private, CGNAT and link-local ranges (and IPv6 ULA / link-local): where a
+// tunnel's own resolver lives. A public resolver such as 1.1.1.1 answers
+// over the normal connection just as well, so it's never "unreachable".
+var PRIVATE_NETS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16", "fc00::/7", "fe80::/10"]
+
+function isPrivateAddress(text) {
+  var a = parseCidr(text)
+  if (!a) return false
+  for (var i = 0; i < PRIVATE_NETS.length; i++) if (cidrContains(parseCidr(PRIVATE_NETS[i]), a)) return true
+  return false
+}
+
+// Private DNS servers a tunnel names that its routes don't reach. With
+// "Route all traffic" off, they're asked over the normal connection instead,
+// which can't reach them, so lookups time out.
 function unroutedDns(tunnel) {
   if (!tunnel || !tunnel.dns || tunnel.dns.length === 0) return []
   var full = defaultRouteFamilies(tunnel)
   var nets = tunnelNetworks(tunnel)
   return tunnel.dns.filter(function(server) {
     var a = parseCidr(server)
-    if (!a) return false
+    if (!a || !isPrivateAddress(server)) return false
     if (full.indexOf(a.family) !== -1) return false
     for (var i = 0; i < nets.length; i++) if (cidrContains(nets[i], a)) return false
     return true
@@ -718,6 +730,18 @@ function routesCommands(tunnel, text) {
     bad: [],
     off: []
   }
+}
+
+// bin/wg-since output: "<device>\t<epoch seconds>" lines -> { device: ms }.
+function parseActivations(raw) {
+  var out = {}
+  var lines = String(raw || "").split("\n").slice(0, 256)
+  for (var i = 0; i < lines.length; i++) {
+    var f = lines[i].split("\t")
+    if (f.length !== 2 || !isInterfaceName(f[0]) || !/^\d{9,11}(\.\d+)?$/.test(f[1])) continue
+    out[f[0]] = Math.round(Number(f[1]) * 1000)
+  }
+  return out
 }
 
 function isInterfaceName(name) {
@@ -980,6 +1004,8 @@ if (typeof module !== "undefined") {
     parseDnsServers: parseDnsServers,
     parseRoutes: parseRoutes,
     unroutedDns: unroutedDns,
+    isPrivateAddress: isPrivateAddress,
+    parseActivations: parseActivations,
     dnsCommands: dnsCommands,
     routeAllCommands: routeAllCommands,
     routesCommands: routesCommands,

@@ -120,7 +120,7 @@
   "settings.dnsDomains": "Domains",
   "settings.dnsDomains.hint": "Comma-separated, e.g. home.lan. Saved on Enter; empty goes back to all lookups",
   "settings.badDomain": "Not a domain name: %1. Nothing was changed.",
-  "settings.dnsUnrouted.hint": "None of these routes cover it, so lookups go over your normal connection and usually time out",
+  "settings.dnsUnrouted.hint": "It's a private address and none of these routes cover it, so lookups go over your normal connection and time out",
   "settings.addRoute": "Add %1",
   "settings.addRoute.hint": "Route the DNS server's network through the tunnel (reconnects it)",
   "tunnel.split": "split"

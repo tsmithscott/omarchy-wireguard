@@ -347,4 +347,17 @@ for (const file of fs.readdirSync(path.join(__dirname, "..")).filter(f => f.ends
     ["ipv4.dns-search", "", "ipv6.dns-search", "~home.lan"])
 }
 
+// ---- public resolvers and interface creation time ----
+{
+  const mkt = (over) => Object.assign({ id: "nm:x", kind: "nm", uuid: UUID, device: "home", active: true, addresses: ["10.1.0.2/24"], dns: ["1.1.1.1"], routes: [], routeSpecs: [], neverDefault: { v4: true, v6: true }, familyOff: { v4: false, v6: true }, peers: [{ allowedIps: ["0.0.0.0/0"] }] }, over || {})
+  assert.deepStrictEqual(M.unroutedDns(mkt()), [])
+  assert.deepStrictEqual(M.suggestedRoutes(mkt()), [])
+  assert.deepStrictEqual(M.unroutedDns(mkt({ dns: ["1.1.1.1", "172.20.0.53", "fd12::53", "2606:4700:4700::1111"] })), ["172.20.0.53", "fd12::53"])
+  assert.strictEqual(M.isPrivateAddress("100.100.100.100"), true)
+  assert.strictEqual(M.isPrivateAddress("172.32.0.1"), false)
+  assert.strictEqual(M.isPrivateAddress("nope"), false)
+  assert.deepStrictEqual(M.parseActivations("home-router\t1795223443.069457\nbad name\t1795223443\nwg0\tsoon\nwg1\t1795223000\n"),
+    { "home-router": 1795223443069, wg1: 1795223000000 })
+}
+
 console.log("model tests passed")

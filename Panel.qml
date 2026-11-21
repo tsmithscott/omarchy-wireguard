@@ -651,7 +651,10 @@ Panel {
                   var t = root.selected
                   if (!t) return "--"
                   if (Model.routesAll(t)) return strings.t("routes.all")
-                  var nets = (t.addresses || []).map(function(a) {
+                  // Link-local (fe80::/64) is on every interface; not worth listing.
+                  var nets = (t.addresses || []).filter(function(a) {
+                    return !/^(fe[89ab][0-9a-f]:|169\.254\.)/i.test(String(a))
+                  }).map(function(a) {
                     var c = Model.parseCidr(a)
                     return c ? Model.cidrText(c) : a
                   }).concat(t.routes || [])

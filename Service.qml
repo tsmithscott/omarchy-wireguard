@@ -20,6 +20,7 @@ Item {
   readonly property string setupScript: pluginDir + "/bin/setup-peer-stats"
   readonly property string dnsSetupScript: pluginDir + "/bin/setup-tunnel-dns"
   readonly property string dnsDispatcher: pluginDir + "/bin/tunnel-dns-dispatcher"
+  readonly property string sinceScript: pluginDir + "/bin/wg-since"
   readonly property string userName: Quickshell.env("USER") || Quickshell.env("LOGNAME") || ""
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 10, 3, 3600)
@@ -155,7 +156,45 @@ Item {
 
   function uptimeFor(t) {
     if (!t || !isActive(t) || !_upSince[t.id]) return -1
-    return (Date.now() - _upSince[t.id]) / 1000
+    return Math.max(0, (Date.now() - _upSince[t.id]) / 1000)
+  }
+
+  // Tunnels that were up before the shell started, or reconnected between
+  // two polls, have no start time we watched. NetworkManager logs each
+  // activation, so ask the journal (bin/wg-since) once for those.
+  property var _sinceTried: ({})
+
+  function lookupStartTimes() {
+    if (sinceProcess.running || actionProcess.running || _queue.length > 0 || Object.keys(pending).length > 0) return
+    var now = Date.now()
+    var devices = []
+    var tried = Object.assign({}, _sinceTried)
+    for (var i = 0; i < tunnels.length; i++) {
+      var t = tunnels[i]
+      if (t.kind !== "nm" || !t.active || _upSince[t.id] || !Model.isInterfaceName(t.device)) continue
+      if (tried[t.id] && now - tried[t.id] < 300000) continue
+      tried[t.id] = now
+      devices.push(t.device)
+    }
+    if (devices.length === 0) return
+    _sinceTried = tried
+    sinceProcess.command = ["bash", sinceScript].concat(devices)
+    sinceProcess.running = true
+  }
+
+  // A settings change that reconnects the tunnel restarts its uptime; the
+  // journal has the new activation once the reconnect is done.
+  function forgetStart(t) {
+    var s = Object.assign({}, _upSince)
+    delete s[t.id]
+    _upSince = s
+    var tried = Object.assign({}, _sinceTried)
+    delete tried[t.id]
+    _sinceTried = tried
+  }
+
+  function reconnects(cmds) {
+    return cmds.some(function(c) { return c[1] === "connection" && c[2] === "up" })
   }
 
   // ---- polling -----------------------------------------------------------
@@ -249,6 +288,7 @@ Item {
         publicIpDelay.restart()
       }
     }
+    if (next.full) Qt.callLater(lookupStartTimes)
     rxRate = rx
     txRate = tx
     history = Model.trimHistory(Model.pushHistory(history, { rx: rx, tx: tx, at: now }, 120), now, historyWindowMs + 2000)
@@ -426,6 +466,7 @@ Item {
   // off. Nothing is changed when either is non-empty.
   function setDnsServers(t, text) {
     var r = Model.dnsCommands(t, text)
+    if (reconnects(r.commands)) forgetStart(t)
     for (var i = 0; i < r.commands.length; i++) enqueue(r.commands[i], "")
     return r
   }
@@ -433,6 +474,7 @@ Item {
   function setRoutes(t, text) {
     var r = Model.routesCommands(t, text)
     if (r.commands.length > 0 && isActive(t)) setPending(t, true)
+    if (reconnects(r.commands)) forgetStart(t)
     for (var i = 0; i < r.commands.length; i++) enqueue(r.commands[i], "")
     return r
   }
@@ -460,6 +502,7 @@ Item {
       if (replaced.length > 0) notifyReplaced(t, replaced)
     }
     if (isActive(t)) setPending(t, true)
+    if (reconnects(cmds)) forgetStart(t)
     for (var i = 0; i < cmds.length; i++) enqueue(cmds[i], "")
   }
 
@@ -597,6 +640,25 @@ Item {
       if (exitCode !== 0 && exitCode !== 126) root.lastError = root.elide(String(setupErr.text || "Setup failed"))
       else if (exitCode === 0) root.lastError = ""
       root.refresh(true)
+    }
+  }
+
+  Process {
+    id: sinceProcess
+    stdout: StdioCollector { id: sinceOut; waitForEnd: true }
+    onExited: function(exitCode) {
+      var found = Model.parseActivations(String(sinceOut.text || ""))
+      var since = Object.assign({}, root._upSince)
+      var now = Date.now()
+      var changed = false
+      for (var i = 0; i < root.tunnels.length; i++) {
+        var t = root.tunnels[i]
+        var at = found[t.device]
+        if (!t.active || since[t.id] || !at || at > now + 5000) continue
+        since[t.id] = at
+        changed = true
+      }
+      if (changed) root._upSince = since
     }
   }
 
